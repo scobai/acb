@@ -240,16 +240,17 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
     // Extract account number - look for "ACCOUNT NO. TYPE" followed by account number
     // Note: The number and type may appear on the same line as the header or on the next line
     // The account number may use a special dash character (−) or regular hyphen (-)
-    let account_number =
-        srch(r"(?i)ACCOUNT\s+NO[.\s]*(?:TYPE)?[.\s]*([0-9]+[−\-][0-9]+)")
-            .str1(text)
-            .unwrap_or_else(|_| String::from("UNKNOWN"))
-            .replace('−', "-"); // Normalize special dash to regular hyphen
+    let account_number = srch(
+        r"(?i)ACCOUNT\s+NO[.\s]*(?:TYPE)?[.\s]*([0-9a-zA-Z]+[−\-][0-9a-zA-Z]+)",
+    )
+    .str1(text)
+    .unwrap_or_else(|_| String::from("UNKNOWN"))
+    .replace('−', "-"); // Normalize special dash to regular hyphen
 
     // Extract account type - look for the type following the account number
     // Note: The type may appear on the same line as the account number or on a following line
     let account_type =
-        srch(r"(?i)ACCOUNT\s+NO[.\s]*(?:TYPE)?[.\s]*[0-9]+[−\-][0-9]+\s+(\w+)")
+        srch(r"(?i)ACCOUNT\s+NO[.\s]*(?:TYPE)?[.\s]*[0-9a-zA-Z]+[−\-][0-9a-zA-Z]+\s+(\w+)")
             .str1(text)
             .unwrap_or_else(|_| String::from("CSH"));
 
@@ -373,8 +374,8 @@ mod tests {
         assert_eq!(lop.memo, format!("BMO Trade {}", expected_trade_date));
         assert_eq!(py.memo, format!("BMO Trade {}", expected_trade_date));
 
-        assert_eq!(lop.account_number, "123-4567890");
-        assert_eq!(py.account_number, "123-4567890");
+        assert_eq!(lop.account_number, "123-XXXXX123");
+        assert_eq!(py.account_number, "123-XXXXX123");
         assert_eq!(lop.account_type, "CSH");
         assert_eq!(py.account_type, "CSH");
         assert_eq!(lop.client_name, "MR JOHN DOE");
@@ -436,8 +437,8 @@ mod tests {
         assert_eq!(lop.memo, format!("BMO Trade {}", expected_trade_date_s));
         assert_eq!(py.memo, format!("BMO Trade {}", expected_trade_date_s));
 
-        assert_eq!(lop.account_number, "123-4567890");
-        assert_eq!(py.account_number, "123-4567890");
+        assert_eq!(lop.account_number, "123-XXXXX123");
+        assert_eq!(py.account_number, "123-XXXXX123");
         assert_eq!(lop.account_type, "CSH");
         assert_eq!(py.account_type, "CSH");
         assert_eq!(lop.client_name, "MR JOHN DOE");
@@ -499,8 +500,8 @@ mod tests {
         assert_eq!(lop.memo, format!("BMO Trade {}", expected_trade_date));
         assert_eq!(py.memo, format!("BMO Trade {}", expected_trade_date));
 
-        assert_eq!(lop.account_number, "123-4567890");
-        assert_eq!(py.account_number, "123-4567890");
+        assert_eq!(lop.account_number, "123-XXXXX123");
+        assert_eq!(py.account_number, "123-XXXXX123");
         assert_eq!(lop.account_type, "CSH");
         assert_eq!(py.account_type, "CSH");
         assert_eq!(lop.client_name, "MR JOHN DOE");
