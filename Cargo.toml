@@ -47,6 +47,11 @@ path = "src/bin/questrade_statement_fmv.rs"
 required-features = [ "pdf_parse" ]
 
 [[bin]]
+name = "bmo-pdf-tx-extract"
+path = "src/bin/bmo_pdf_tx_extract.rs"
+required-features = [ "pdf_parse" ]
+
+[[bin]]
 name = "etrade-plan-pdf-tx-extract"
 path = "src/bin/etrade_plan_pdf_tx_extract.rs"
 required-features = [ "pdf_parse" ]

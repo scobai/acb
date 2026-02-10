@@ -7,6 +7,8 @@ pub mod excel;
 pub mod tx_export_convert_impl;
 
 #[cfg(feature = "pdf_parse")]
+pub mod bmo_pdf_tx_extract_impl;
+#[cfg(feature = "pdf_parse")]
 pub mod etrade_plan_pdf_tx_extract_impl;
 #[cfg(feature = "pdf_parse")]
 pub mod pdf;

@@ -1,0 +1,68 @@
+ASDFE12345_1234567_123  − 00012343 − E:12345ASDFE12345_1234567_123−E:12345−01234
+MR JOHN DOE
+100−1234 NOWHERE ROAD
+WHOVILLE BC    A1A 0B0Confirmation  Notice
+Order Execution Account Only
+DATE
+JANUARY  7, 2026
+ACCOUNT  NO.TYPE
+123−4567890 CSH
+FOR SETTLEMENT IN THIS OFFICE1 FIRST CANADIAN PLACE, P.O. BOX 150
+TORONTO , ONTARIO  M5X 1H3
+WE CONFIRM THIS TRANSACTION(S) SUBJECT TO THE AGREEMENT ON THE REVERSE SIDE.
+PLEASE RETAIN THIS CONTRACT FOR INCOME TAX PURPOSES
+BMO InvestorLine Inc. is a Member − Canadian Investor Protection Fund. Member of the Canadian Investment Regulatory Organization (CIRO)AS AGENTS, WE TODAY CONFIRM THE FOLLOWING SALE FOR YOUR ACCOUNT ON NASDAQ CX2.
+SETTLEMENT DATE JANUARY 8, 2026
+TRANSACTION TYPE SOLD
+REFERENCE  W1112   /   CUSIP CA1234567890   /   SECURITY NO. G012345   /   ORDER NO. 987612   /    AQuantity Security Description Unit Price
+20 GLOBAL X US DLR CURRENCY @ 14.0100C$
+ETF UNIT CL A
+UNSOLICITED
+CLIENT NAME MR JOHN DOE
+ACCOUNT NO 123−4567890 CSH
+INVESTMENT REP AUTOMATED ORDER
+IR CODE 6AB
+TEL. (888) 776−6886GROSS AMOUNT 280.20 
+COMMISSION .02 
+SUB TOTAL 280.18 C$
+NET AMOUNT 280.18 C$
+
+ASDFE12345_1234567_123  − 00012344 − E:12345BMO Wealth Management is the brand name for a business group consisting of Bank of Montreal and certain of its affiliates, including BMO InvestorLine
+Inc., in providing wealth management products and services. "BMO (M−bar Roundel symbol)" is a registered trademark of Bank of Montreal, used under
+licence. BMO InvestorLine Inc. is a wholly owned subsidiary of Bank of Montreal. BMO Nesbitt Burns Inc. is a Member of the Canadian Investor Protection
+Fund and a Member of the Canadian Investment Regulatory Organization (CIRO).
+Code Information: Nonvot Non−voting / Resvot Restricted Voting / Subvot Subordinate voting
+Without in any way limiting or otherwise affecting our rights under any other contracts between us, you agree with us as follows: If this transaction has been
+made on an exchange, or marketplace, it is subject to the bylaws, rules, regulations and customs of such exchange or marketplace and of any clearing
+house involved.  All securities, options, commodities and property (hereinafter called "securities") held or carried by us for you or on your account, shall, so
+long as any indebtedness of yours to us shall from time to time exist, be held as collateral security for such indebtedness. We shall have the right, without
+notice to you, to use such securities in making deliveries or substitutions; to loan such securities and raise money on them; and to pledge and re−pledge
+them, either separately or in our general loans otherwise, together with any securities belonging to us or to others. We shall exercise such right in such
+manner and on such terms and conditions as we may deem necessary. We shall have the right to use any amount for such purposes, whether more or less
+than the amount due by you, and for such purposes as we deem advisable. If we determine it necessary for our protection, we shall have the right to buy in
+securities  of which your account may be short and to sell securities of which your account may be long. We may exercise any of such rights without notice,
+publicly or privately and without demand for margin or tender to you. BMO InvestorLine Inc. is an introducing broker and BMO Nesbitt Burns Inc. acted as its
+agent for this trade and is its carrying broker for this account. If we are acting in this transaction as your agent, the name of the person or company from, to
+or through whom the securities were bought or sold will be furnished to you upon request.
+We are responsible for properly processing your transactions and for safeguarding and accounting for your assets under our control. You are responsible for
+reading all documents provided to you by our firm and its representatives, and for promptly notifying us of any errors, omissions or unauthorized
+discretionary  transactions.  Under normal circumstances, BMO InvestorLine will assume the contents of this trade confirm has been acknowledged as correct,
+approved and consented by you unless we receive written notice from you to the contrary within forty−five days after it is sent to you.
+Notice should be addressed to: BMO InvestorLine Inc.
+Tr# 3973 First Canadian Place, B1 Level
+100 King St. W. Toronto, Ontario M5X 1H3
+Failure to notify us may affect any legal claim you may have.
+Customers’  accounts are protected by the Canadian Investor Protection Fund within specified limits. A brochure describing the nature and limits of coverage
+is available  upon request. AccountLink(s) for Non−registered accounts are bank accounts at BMO Bank of Montreal, a member of Canada Deposit Insurance
+Corporation  (CDIC), and are eligible for deposit insurance from the CDIC, subject to maximum coverage limitations. Please visit the CDIC website for further
+information  about coverage limits. Securities held by BMO InvestorLine in your Account as well as any cash held temporarily by BMO InvestorLine for
+subsequent  credit to the chequing/savings component of your Account are not deposits which are insured under the Canada Deposit Insurance Corporation
+Act.
+"BMO Bank of Montreal" is a brand name used by Bank of Montreal.
+Currency  Conversion  and Fixed Income Fees: BMO InvestorLine acts as agent in fixed income transactions and as principal in currency conversion
+transactions  (unless BMO InvestorLine specifically advises you otherwise). Foreign currency deposited into a registered account, including dividends, interest
+and proceeds  from the sale of foreign securities, will be automatically converted into Canadian funds where the transaction occurred on the Canadian
+denominated  side of the account or U.S. funds where the transaction occurred on the U.S. denominated side of the account, whichever is applicable. We
+and the parties related to us will earn revenue from currency conversions, in addition to the commission applicable to any trade, consistent with our fee
+schedule.
+

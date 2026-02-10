@@ -4,6 +4,7 @@ mod broker_tx;
 mod fx_tracker;
 
 // Individual brokers
+pub mod bmo;
 pub mod etrade;
 #[cfg(feature = "xlsx_read")]
 pub mod questrade;
