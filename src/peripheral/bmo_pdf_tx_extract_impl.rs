@@ -223,7 +223,7 @@ fn validate_unique_order_numbers(trades: &[bmo::BmoTrade]) -> Result<(), SError>
     let duplicates: Vec<_> = order_counts
         .iter()
         .filter(|(_, count)| **count > 1)
-        .map(|(order_no, count)| format!("{}: {} occurrences", order_no, count))
+        .map(|(order_no, count)| format!("ORDER NO. {}: {} occurrences", order_no, count))
         .collect();
 
     if !duplicates.is_empty() {
@@ -737,5 +737,60 @@ mod tests {
             "Error should include specific counts, got: {}",
             err_msg
         );
+    }
+
+    #[test]
+    fn test_parse_pdfs_2023_hisa_lopdf_pypdf_consistency() {
+        use std::fs;
+
+        let mut lopdf_files: Vec<_> =
+            fs::read_dir("tests/data/bmo_scenarios/2023_hisa/lopdf")
+                .expect("Failed to read lopdf directory")
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("txt") {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        lopdf_files.sort();
+
+        let mut pypdf_files: Vec<_> =
+            fs::read_dir("tests/data/bmo_scenarios/2023_hisa/pypdf")
+                .expect("Failed to read pypdf directory")
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("txt") {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        pypdf_files.sort();
+
+        // Verify we have the expected files
+        assert_eq!(lopdf_files.len(), 1, "Expected 1 file in lopdf directory");
+        assert_eq!(pypdf_files.len(), 1, "Expected 1 file in pypdf directory");
+
+        // Parse files from both directories
+        let lopdf_trades =
+            parse_pdfs(&lopdf_files, false).expect("Failed to parse lopdf files");
+        let pypdf_trades =
+            parse_pdfs(&pypdf_files, false).expect("Failed to parse pypdf files");
+
+        // Verify same number of trades
+        assert_eq!(
+            lopdf_trades.trades.len(),
+            pypdf_trades.trades.len(),
+            "lopdf and pypdf should produce same number of trades"
+        );
+
+        // Verify each trade matches between lopdf and pypdf
+        assert_trades_equal(&lopdf_trades.trades, &pypdf_trades.trades);
     }
 }

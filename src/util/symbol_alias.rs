@@ -39,6 +39,34 @@ impl SymbolAliasResolver {
                     canonical: "VEE.TO",
                     aka: None,
                 },
+            ),
+            (
+                "B074340",
+                SymbolAlias {
+                    canonical: "BMT CAD HISA",
+                    aka: Some("BMT104/BMT109"),
+                },
+            ),
+            (
+                "B074356",
+                SymbolAlias {
+                    canonical: "BMT CAD HISA",
+                    aka: Some("BMT104/BMT109"),
+                },
+            ),
+            (
+                "B074348",
+                SymbolAlias {
+                    canonical: "BMT USD HISA",
+                    aka: Some("BMT124/BMT129"),
+                },
+            ),
+            (
+                "B074364",
+                SymbolAlias {
+                    canonical: "BMT USD HISA",
+                    aka: Some("BMT124/BMT129"),
+                },
             )
             // Add more aliases here
         ]);

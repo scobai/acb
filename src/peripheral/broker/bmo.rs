@@ -291,15 +291,23 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
             .str1(text)
             .unwrap_or_else(|_| String::from("CSH"));
 
-    // Extract client name - look for "CLIENT NAME" followed by name before "ACCOUNT"
+    // Extract client name - try labeled format first (e.g., "CLIENT NAME MR JOHN DOE"),
+    // then fall back to extracting from the top of the document (some PDFs have name on
+    // line 3 without a label before the address)
     let client_name = srch(r"(?i)CLIENT\s+NAME\s+(.+?)(?:\s+ACCOUNT|$)")
-        .str1(text)?
+        .str1(text)
+        .or_else(|_| {
+            // Fall back: try extracting from top of document (line 3, before address)
+            // Look for pattern like "MR john doe" at the start
+            srch(r"(?m)^\s*([A-Z]{2,3}\s+[a-zA-Z]+(?:\s+[a-zA-Z]+)*)\s*$")
+                .str1(text)
+        })?
         .trim()
         .split('\n')
         .next()
         .unwrap_or("")
         .trim()
-        .to_string();
+        .to_uppercase(); // Normalize to uppercase for consistency
 
     // Extract gross amount using shared money pattern
     let gross_pat = format!(r"(?i)GROSS\s+AMOUNT\s+({})", money_pat);
@@ -716,5 +724,73 @@ mod tests {
 
         assert_eq!(lop.order_number, "999123");
         assert_eq!(py.order_number, "999123");
+    }
+
+    #[test]
+    fn test_parse_buy_hisa_lopdf_pypdf() {
+        let lopdf_text = read_sample(
+            "tests/data/bmo_scenarios/2023_hisa/lopdf/lopdf_buy_hisa.txt",
+        );
+        let pypdf_text = read_sample(
+            "tests/data/bmo_scenarios/2023_hisa/pypdf/pypdf_buy_hisa.txt",
+        );
+
+        let lop =
+            parse_bmo_trade(&lopdf_text, &std::path::PathBuf::from("lopdf.txt"))
+                .unwrap();
+        let py =
+            parse_bmo_trade(&pypdf_text, &std::path::PathBuf::from("pypdf.txt"))
+                .unwrap();
+
+        // Both should be BUY and CAD
+        assert_eq!(lop.action, TxAction::Buy);
+        assert_eq!(py.action, TxAction::Buy);
+        assert_eq!(lop.currency, Currency::cad());
+        assert_eq!(py.currency, Currency::cad());
+
+        assert_eq!(lop.amount_per_share, dec!(1.0000));
+        assert_eq!(py.amount_per_share, dec!(1.0000));
+
+        assert_eq!(lop.num_shares, Decimal::from(9000u32));
+        assert_eq!(py.num_shares, Decimal::from(9000u32));
+
+        assert_eq!(lop.commission, Decimal::ZERO);
+        assert_eq!(py.commission, Decimal::ZERO);
+
+        // Security should use canonical symbol from alias
+        assert_eq!(lop.security, "BMT CAD HISA");
+        assert_eq!(py.security, "BMT CAD HISA");
+
+        let expected_trade_date =
+            time::Date::from_calendar_date(2023, time::Month::March, 15).unwrap();
+        let expected_settle =
+            time::Date::from_calendar_date(2023, time::Month::March, 15).unwrap();
+        assert_eq!(lop.trade_date, expected_trade_date);
+        assert_eq!(py.trade_date, expected_trade_date);
+        assert_eq!(lop.settlement_date, expected_settle);
+        assert_eq!(py.settlement_date, expected_settle);
+
+        assert_eq!(
+            lop.memo,
+            "BMO Trade ; B074340 AKA BMT104/BMT109 - BANK OF MONTREAL CAD HISA"
+        );
+        assert_eq!(
+            py.memo,
+            "BMO Trade ; B074340 AKA BMT104/BMT109 - BANK OF MONTREAL CAD HISA"
+        );
+
+        assert_eq!(lop.account_number, "999-9999999");
+        assert_eq!(py.account_number, "999-9999999");
+        assert_eq!(lop.account_type, "CSH");
+        assert_eq!(py.account_type, "CSH");
+        assert_eq!(lop.client_name, "MR JOHN DOE");
+        assert_eq!(py.client_name, "MR JOHN DOE");
+
+        let expected_gross = dec!(1.0000) * Decimal::from(9000u32);
+        assert_eq!(lop.gross_amount, expected_gross);
+        assert_eq!(py.gross_amount, expected_gross);
+
+        assert_eq!(lop.order_number, "999999");
+        assert_eq!(py.order_number, "999999");
     }
 }
