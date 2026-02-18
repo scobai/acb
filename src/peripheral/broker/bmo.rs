@@ -152,6 +152,7 @@ pub struct BmoTrade {
     pub account_type: String,
     pub client_name: String,
     pub gross_amount: Decimal,
+    pub order_number: String,
 }
 
 /// Parse a single BMO trade confirmation from text.
@@ -304,6 +305,10 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
     let gross_pat = format!(r"(?i)GROSS\s+AMOUNT\s+({})", money_pat);
     let gross_amount = srch(&gross_pat).dec1(text)?;
 
+    // Extract order number (e.g., "ORDER NO. 999123")
+    let order_number = srch(r"(?i)ORDER\s+NO\.\s+(\d+)")
+        .str1(text)?;
+
     Ok(BmoTrade {
         security,
         trade_date,
@@ -318,6 +323,7 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
         account_type,
         client_name,
         gross_amount,
+        order_number,
     })
 }
 
@@ -426,6 +432,9 @@ mod tests {
         let expected_gross = dec!(125178.30); // 10.1400$ * 12345 units
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
+
+        assert_eq!(lop.order_number, "987611");
+        assert_eq!(py.order_number, "987611");
     }
 
     #[test]
@@ -495,6 +504,9 @@ mod tests {
         let expected_gross = dec!(14.0100) * Decimal::from(20u32);
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
+
+        assert_eq!(lop.order_number, "987612");
+        assert_eq!(py.order_number, "987612");
     }
 
     #[test]
@@ -564,6 +576,9 @@ mod tests {
         let expected_gross = dec!(14.01) * Decimal::from(12325u32);
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
+
+        assert_eq!(lop.order_number, "987613");
+        assert_eq!(py.order_number, "987613");
     }
 
     #[test]
@@ -587,6 +602,9 @@ mod tests {
 
         assert_eq!(lop.memo, "BMO Trade ; G999999");
         assert_eq!(py.memo, "BMO Trade ; G999999");
+
+        assert_eq!(lop.order_number, "987611");
+        assert_eq!(py.order_number, "987611");
     }
 
     #[test]
@@ -695,5 +713,8 @@ mod tests {
         let expected_gross = dec!(32.6300) * Decimal::from(50u32);
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
+
+        assert_eq!(lop.order_number, "999123");
+        assert_eq!(py.order_number, "999123");
     }
 }

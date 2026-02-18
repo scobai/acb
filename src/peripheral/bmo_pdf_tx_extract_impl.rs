@@ -210,6 +210,32 @@ fn render_txs_from_trades(
     )
 }
 
+/// Verify that each transaction has a unique order number (detects duplicate PDFs).
+fn validate_unique_order_numbers(trades: &[bmo::BmoTrade]) -> Result<(), SError> {
+    use std::collections::HashMap;
+
+    let mut order_counts: HashMap<&str, usize> = HashMap::new();
+
+    for trade in trades {
+        *order_counts.entry(&trade.order_number).or_insert(0) += 1;
+    }
+
+    let duplicates: Vec<_> = order_counts
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(order_no, count)| format!("{}: {} occurrences", order_no, count))
+        .collect();
+
+    if !duplicates.is_empty() {
+        return Err(format!(
+            "Duplicate order numbers detected (same PDF submitted multiple times?):\n{}",
+            duplicates.join("\n")
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn run() -> Result<(), ()> {
     let args = Args::parse();
     run_with_args(
@@ -241,6 +267,10 @@ pub fn run_with_args(
     if parsed_trades.trades.is_empty() {
         write_errln!(err_w, "WARN: No trades entries");
     }
+
+    // Validate that all order numbers are unique (detect duplicate PDFs)
+    validate_unique_order_numbers(&parsed_trades.trades)
+        .map_err(|e| write_errln!(err_w, "ERROR: {}", e))?;
 
     // Show extracted data in debug mode
     if args.debug {
@@ -366,6 +396,7 @@ mod tests {
                 account_type: "CSH".to_string(),
                 client_name: "MR JOHN DOE".to_string(),
                 gross_amount: "172953.45".parse().unwrap(),
+                order_number: "123456".to_string(),
             },
             bmo::BmoTrade {
                 security: "IVV".to_string(),
@@ -391,6 +422,7 @@ mod tests {
                 account_type: "CSH".to_string(),
                 client_name: "MR JOHN DOE".to_string(),
                 gross_amount: "172953.45".parse().unwrap(),
+                order_number: "654321".to_string(),
             },
         ];
 
@@ -459,6 +491,7 @@ mod tests {
             account_type: "CSH".to_string(),
             client_name: "MR JOHN DOE".to_string(),
             gross_amount: "172953.45".parse().unwrap(),
+            order_number: "999999".to_string(),
         }];
 
         let res = txs_from_trades(&trades);
@@ -580,5 +613,51 @@ mod tests {
 
         // Verify each trade matches between lopdf and pypdf
         assert_trades_equal(&lopdf_trades.trades, &pypdf_trades.trades);
+    }
+
+    #[test]
+    fn test_parse_pdfs_dupes_detects_duplicates() {
+        use std::fs;
+
+        let mut dup_files: Vec<_> =
+            fs::read_dir("tests/data/bmo_scenarios/dupes")
+                .expect("Failed to read dupes directory")
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("txt") {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        dup_files.sort();
+
+        // Should have 2 duplicate files
+        assert_eq!(dup_files.len(), 2, "Expected 2 files in dupes directory");
+
+        // Parse the files - this should succeed
+        let dup_trades = parse_pdfs(&dup_files, false).expect("Failed to parse dup files");
+        assert_eq!(dup_trades.trades.len(), 2, "Expected 2 trades parsed");
+
+        // Validate unique order numbers - this should FAIL with duplicate detection
+        let result = validate_unique_order_numbers(&dup_trades.trades);
+        assert!(
+            result.is_err(),
+            "Expected error for duplicate order numbers"
+        );
+
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("Duplicate order numbers detected"),
+            "Error message should mention duplicate detection, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("same PDF submitted multiple times"),
+            "Error message should suggest same PDF, got: {}",
+            err_msg
+        );
     }
 }
