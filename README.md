@@ -21,6 +21,7 @@ In addition to the main `acb` app, a few extra utilities are provided for conven
 Most/all of the complex scripts are also compiled into `target/...` or your cargo bin (see installation below), though some simpler scripts (without any dependencies) are in the `py/` directory.
 - tx-export-convert: Convert exported transaction spreadsheets to acb-compatible csv files (Questrade-only for now)
 - etrade-plan-pdf-tx-extract: Generate acb csv files from ETRADE stock plan PDFs.
+- bmo-pdf-tx-extract: Generate acb csv files from BMO Investorline trade confirmation PDFs.
 
 ## Example
 
