@@ -202,8 +202,16 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
     let full_qty_line =
         qty_caps.get(2).ok_or("Could not extract security name group")?.as_str();
 
-    // Extract only the first line of the security name
-    let raw_security = full_qty_line.lines().next().unwrap_or("").trim().to_string();
+    // Extract only the first line of the security name and normalize whitespace
+    // (removes double-spaces, tabs, newlines, etc., replacing with single spaces)
+    let raw_security = full_qty_line
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if raw_security.is_empty() {
         return Err("Could not extract security name".to_string());
     }
@@ -218,10 +226,14 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
     let symbol_alias_resolver = SymbolAliasResolver::new();
     let (security, orig_symbol_note) = if let Some(code) = security_code {
         if let Some(alias) = symbol_alias_resolver.resolve(code.as_str()) {
-            (
-                alias.canonical.to_string(),
-                Some(format!("; {} AKA {} - {}", code, alias.aka.unwrap_or(""), raw_security)),
-            )
+            let memo_suffix = if let Some(aka_value) = alias.aka {
+                // The AKA value is something like DLR.TO vs DLR.U.TO
+                format!("; {} AKA {} - {}", code, aka_value, raw_security)
+            } else {
+                // NO AKA value, just include the code and raw security in the memo
+                format!("; {} - {}", code, raw_security)
+            };
+            (alias.canonical.to_string(), Some(memo_suffix))
         } else {
             (raw_security.clone(), Some(format!("; {}", code)))
         }
@@ -257,8 +269,9 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
 
     // Extract commission using shared money pattern
     // NOTE: BMO does not always show commission with a leading number before the decimal.
+    // If commission is not found, default to 0.00
     let commission_pat = format!(r"(?i)COMMISSION\s+({})", money_pat);
-    let commission = srch(&commission_pat).dec1(text)?;
+    let commission = srch(&commission_pat).dec1(text).unwrap_or_else(|_| Decimal::ZERO);
 
     // Extract account number - look for "ACCOUNT NO. TYPE" followed by account number
     // Note: The number and type may appear on the same line as the header or on the next line
@@ -617,5 +630,70 @@ mod tests {
             let m = MONEY_VALUE.captures(s).expect(&format!("should match {}", s));
             assert_eq!(m.get(0).unwrap().as_str(), s);
         }
+    }
+
+    #[test]
+    fn test_parse_buy_vee_nocommission_lopdf_pypdf() {
+        let lopdf_text = read_sample(
+            "tests/data/bmo_scenarios/2022_sample/lopdf/buy_vee_nocommission.txt",
+        );
+        let pypdf_text = read_sample(
+            "tests/data/bmo_scenarios/2022_sample/pypdf/buy_vee_nocommission.txt",
+        );
+
+        let lop =
+            parse_bmo_trade(&lopdf_text, &std::path::PathBuf::from("lopdf.txt"))
+                .unwrap();
+        let py =
+            parse_bmo_trade(&pypdf_text, &std::path::PathBuf::from("pypdf.txt"))
+                .unwrap();
+
+        // Both should be BUY and CAD
+        assert_eq!(lop.action, TxAction::Buy);
+        assert_eq!(py.action, TxAction::Buy);
+        assert_eq!(lop.currency, Currency::cad());
+        assert_eq!(py.currency, Currency::cad());
+
+        assert_eq!(lop.amount_per_share, dec!(32.6300));
+        assert_eq!(py.amount_per_share, dec!(32.6300));
+
+        assert_eq!(lop.num_shares, Decimal::from(50u32));
+        assert_eq!(py.num_shares, Decimal::from(50u32));
+
+        assert_eq!(lop.commission, Decimal::ZERO);
+        assert_eq!(py.commission, Decimal::ZERO);
+
+        // Security should use canonical symbol
+        assert_eq!(lop.security, "VEE.TO");
+        assert_eq!(py.security, "VEE.TO");
+
+        let expected_trade_date =
+            time::Date::from_calendar_date(2022, time::Month::December, 25).unwrap();
+        let expected_settle =
+            time::Date::from_calendar_date(2022, time::Month::December, 27).unwrap();
+        assert_eq!(lop.trade_date, expected_trade_date);
+        assert_eq!(py.trade_date, expected_trade_date);
+        assert_eq!(lop.settlement_date, expected_settle);
+        assert_eq!(py.settlement_date, expected_settle);
+
+        assert_eq!(
+            lop.memo,
+            "BMO Trade ; V009796 - VANGUARDFTSE EMERGING MKTS"
+        );
+        assert_eq!(
+            py.memo,
+            "BMO Trade ; V009796 - VANGUARDFTSE EMERGING MKTS"
+        );
+
+        assert_eq!(lop.account_number, "999-9999999");
+        assert_eq!(py.account_number, "999-9999999");
+        assert_eq!(lop.account_type, "CSH");
+        assert_eq!(py.account_type, "CSH");
+        assert_eq!(lop.client_name, "MR JOHN DOE");
+        assert_eq!(py.client_name, "MR JOHN DOE");
+
+        let expected_gross = dec!(32.6300) * Decimal::from(50u32);
+        assert_eq!(lop.gross_amount, expected_gross);
+        assert_eq!(py.gross_amount, expected_gross);
     }
 }

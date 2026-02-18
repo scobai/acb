@@ -262,6 +262,83 @@ mod tests {
 
     use super::*;
 
+    fn assert_trades_equal(
+        lopdf_trades: &[bmo::BmoTrade],
+        pypdf_trades: &[bmo::BmoTrade],
+    ) {
+        assert_eq!(
+            lopdf_trades.len(),
+            pypdf_trades.len(),
+            "lopdf and pypdf should produce same number of trades"
+        );
+
+        for (i, (lop_trade, py_trade)) in
+            lopdf_trades.iter().zip(pypdf_trades.iter()).enumerate()
+        {
+            assert_eq!(
+                lop_trade.security, py_trade.security,
+                "Trade {}: security mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.trade_date, py_trade.trade_date,
+                "Trade {}: trade_date mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.settlement_date, py_trade.settlement_date,
+                "Trade {}: settlement_date mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.action, py_trade.action,
+                "Trade {}: action mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.amount_per_share, py_trade.amount_per_share,
+                "Trade {}: amount_per_share mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.num_shares, py_trade.num_shares,
+                "Trade {}: num_shares mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.commission, py_trade.commission,
+                "Trade {}: commission mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.currency, py_trade.currency,
+                "Trade {}: currency mismatch",
+                i
+            );
+            assert_eq!(lop_trade.memo, py_trade.memo, "Trade {}: memo mismatch", i);
+            assert_eq!(
+                lop_trade.account_number, py_trade.account_number,
+                "Trade {}: account_number mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.account_type, py_trade.account_type,
+                "Trade {}: account_type mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.client_name, py_trade.client_name,
+                "Trade {}: client_name mismatch",
+                i
+            );
+            assert_eq!(
+                lop_trade.gross_amount, py_trade.gross_amount,
+                "Trade {}: gross_amount mismatch",
+                i
+            );
+        }
+    }
+
     #[test]
     fn test_txs_from_trades() {
         let trades = vec![
@@ -447,70 +524,61 @@ mod tests {
         );
 
         // Verify each trade matches between lopdf and pypdf
-        for (i, (lop_trade, py_trade)) in
-            lopdf_trades.trades.iter().zip(pypdf_trades.trades.iter()).enumerate()
-        {
-            assert_eq!(
-                lop_trade.security, py_trade.security,
-                "Trade {}: security mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.trade_date, py_trade.trade_date,
-                "Trade {}: trade_date mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.settlement_date, py_trade.settlement_date,
-                "Trade {}: settlement_date mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.action, py_trade.action,
-                "Trade {}: action mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.amount_per_share, py_trade.amount_per_share,
-                "Trade {}: amount_per_share mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.num_shares, py_trade.num_shares,
-                "Trade {}: num_shares mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.commission, py_trade.commission,
-                "Trade {}: commission mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.currency, py_trade.currency,
-                "Trade {}: currency mismatch",
-                i
-            );
-            assert_eq!(lop_trade.memo, py_trade.memo, "Trade {}: memo mismatch", i);
-            assert_eq!(
-                lop_trade.account_number, py_trade.account_number,
-                "Trade {}: account_number mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.account_type, py_trade.account_type,
-                "Trade {}: account_type mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.client_name, py_trade.client_name,
-                "Trade {}: client_name mismatch",
-                i
-            );
-            assert_eq!(
-                lop_trade.gross_amount, py_trade.gross_amount,
-                "Trade {}: gross_amount mismatch",
-                i
-            );
-        }
+        assert_trades_equal(&lopdf_trades.trades, &pypdf_trades.trades);
+    }
+
+    #[test]
+    fn test_parse_pdfs_2022_sample_lopdf_pypdf_consistency() {
+        use std::fs;
+
+        let mut lopdf_files: Vec<_> =
+            fs::read_dir("tests/data/bmo_scenarios/2022_sample/lopdf")
+                .expect("Failed to read lopdf directory")
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("txt") {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        lopdf_files.sort();
+
+        let mut pypdf_files: Vec<_> =
+            fs::read_dir("tests/data/bmo_scenarios/2022_sample/pypdf")
+                .expect("Failed to read pypdf directory")
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("txt") {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        pypdf_files.sort();
+
+        // Verify we have the expected files
+        assert_eq!(lopdf_files.len(), 1, "Expected 1 file in lopdf directory");
+        assert_eq!(pypdf_files.len(), 1, "Expected 1 file in pypdf directory");
+
+        // Parse files from both directories
+        let lopdf_trades =
+            parse_pdfs(&lopdf_files, false).expect("Failed to parse lopdf files");
+        let pypdf_trades =
+            parse_pdfs(&pypdf_files, false).expect("Failed to parse pypdf files");
+
+        // Verify same number of trades
+        assert_eq!(
+            lopdf_trades.trades.len(),
+            pypdf_trades.trades.len(),
+            "lopdf and pypdf should produce same number of trades"
+        );
+
+        // Verify each trade matches between lopdf and pypdf
+        assert_trades_equal(&lopdf_trades.trades, &pypdf_trades.trades);
     }
 }
