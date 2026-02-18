@@ -430,8 +430,8 @@ mod tests {
         pypdf_files.sort();
 
         // Verify we have the expected files
-        assert_eq!(lopdf_files.len(), 3, "Expected 3 files in lopdf directory");
-        assert_eq!(pypdf_files.len(), 3, "Expected 3 files in pypdf directory");
+        assert_eq!(lopdf_files.len(), 4, "Expected 4 files in lopdf directory");
+        assert_eq!(pypdf_files.len(), 4, "Expected 4 files in pypdf directory");
 
         // Parse files from both directories
         let lopdf_trades =

@@ -11,3 +11,4 @@ pub mod zip;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod os;
+pub mod symbol_alias;

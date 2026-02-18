@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use lazy_static::lazy_static;
 
@@ -15,6 +15,7 @@ use crate::{
 };
 
 use super::SheetToTxsErr;
+use crate::util::symbol_alias::SymbolAliasResolver;
 
 const QUESTRADE_ACCOUNT_BROKER_NAME: &str = "Questrade";
 
@@ -28,12 +29,7 @@ pub fn sheet_to_txs(
     //  'Quantity', 'Price', 'Gross Amount', 'Commission', 'Net Amount',
     //  'Currency', 'Account #', 'Activity Type', 'Account Type'
 
-    let symbol_aliases =
-        HashMap::<&'static str, (&'static str, &'static str)>::from([
-            // symbol : (alias_to, AKA)
-            ("H038778", ("DLR.TO", "DLR.U.TO")),
-            ("G036247", ("DLR.TO", "DLR.U.TO")),
-        ]);
+    let symbol_alias_resolver = SymbolAliasResolver::new();
 
     // Also, None
     let ignored_actions: HashSet<&'static str> = HashSet::from_iter(
@@ -181,10 +177,13 @@ pub fn sheet_to_txs(
                 }
             };
 
-            let (symbol, orig_symbol_note) = if let Some((alias, aka)) =
-                symbol_aliases.get(pre_alias_symbol.as_str())
+            let (symbol, orig_symbol_note) = if let Some(alias) =
+                symbol_alias_resolver.resolve(pre_alias_symbol.as_str())
             {
-                (alias.to_string(), format!("; {pre_alias_symbol} AKA {aka}"))
+                (
+                    alias.canonical.to_string(),
+                    format!("; {pre_alias_symbol} AKA {}", alias.aka),
+                )
             } else {
                 (pre_alias_symbol, String::new())
             };

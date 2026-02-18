@@ -5,6 +5,7 @@ use rust_decimal::Decimal;
 use time::Date;
 
 use super::BrokerTx;
+use crate::util::symbol_alias::SymbolAliasResolver;
 use crate::{
     portfolio::TxAction,
     util::{basic::SError, decimal::parse_large_decimal},
@@ -198,16 +199,38 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
     // Extract security name from the same capture.
     // Note: The security name may span multiple lines in the PDF (e.g., "GLOBAL X US DLR CURRENCY ETF UNIT CL A"),
     // but we only capture the first line to extract here ("GLOBAL X US DLR CURRENCY").
-    // Ideally the confirmation document would include the ticker symbol, but it does not.
     let full_qty_line =
         qty_caps.get(2).ok_or("Could not extract security name group")?.as_str();
 
     // Extract only the first line of the security name
-    let security = full_qty_line.lines().next().unwrap_or("").trim().to_string();
-
-    if security.is_empty() {
+    let raw_security = full_qty_line.lines().next().unwrap_or("").trim().to_string();
+    if raw_security.is_empty() {
         return Err("Could not extract security name".to_string());
     }
+
+    // Try to extract SECURITY NO. code (e.g., CUSIP) from the document
+    let security_code = srch(r"(?i)SECURITY\s+NO\.?\s*([A-Z0-9]+)").str1(text).ok();
+
+    // If the security_code isn't found we'll return an error. As far as I know it is
+    // always present.
+    // If we can't find an alias for the code, we'll just use the raw security name as the symbol,
+    // but we'll include the code in the memo for reference.
+    let symbol_alias_resolver = SymbolAliasResolver::new();
+    let (security, orig_symbol_note) = if let Some(code) = security_code {
+        if let Some(alias) = symbol_alias_resolver.resolve(code.as_str()) {
+            (
+                alias.canonical.to_string(),
+                Some(format!("; {} AKA {} - {}", code, alias.aka, raw_security)),
+            )
+        } else {
+            (raw_security.clone(), Some(format!("; {}", code)))
+        }
+    } else {
+        return Err(
+            "Could not extract security code (SECURITY NO.) from document"
+                .to_string(),
+        );
+    };
 
     // Extract unit price from "@" section using shared money pattern
     let money_pat = &MONEY_VALUE.pattern;
@@ -277,7 +300,7 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
         num_shares,
         commission,
         currency,
-        memo: format!("BMO Trade {}", trade_date),
+        memo: format!("BMO Trade {}", orig_symbol_note.as_deref().unwrap_or("")),
         account_number,
         account_type,
         client_name,
@@ -358,9 +381,9 @@ mod tests {
         assert_eq!(lop.commission, dec!(9.95));
         assert_eq!(py.commission, dec!(9.95));
 
-        // Security name should match - we extract only the first line
-        assert_eq!(lop.security, "GLOBAL X US DLR CURRENCY");
-        assert_eq!(py.security, "GLOBAL X US DLR CURRENCY");
+        // Security should use canonical symbol
+        assert_eq!(lop.security, "DLR.TO");
+        assert_eq!(py.security, "DLR.TO");
 
         let expected_trade_date =
             time::Date::from_calendar_date(2026, time::Month::January, 7).unwrap();
@@ -371,8 +394,14 @@ mod tests {
         assert_eq!(lop.settlement_date, expected_settle);
         assert_eq!(py.settlement_date, expected_settle);
 
-        assert_eq!(lop.memo, format!("BMO Trade {}", expected_trade_date));
-        assert_eq!(py.memo, format!("BMO Trade {}", expected_trade_date));
+        assert_eq!(
+            lop.memo,
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+        );
+        assert_eq!(
+            py.memo,
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+        );
 
         assert_eq!(lop.account_number, "123-XXXXX123");
         assert_eq!(py.account_number, "123-XXXXX123");
@@ -421,9 +450,9 @@ mod tests {
         assert_eq!(lop.commission, dec!(0.02));
         assert_eq!(py.commission, dec!(0.02));
 
-        // Security name should match - we extract only the first line
-        assert_eq!(lop.security, "GLOBAL X US DLR CURRENCY");
-        assert_eq!(py.security, "GLOBAL X US DLR CURRENCY");
+        // Security should use canonical symbol
+        assert_eq!(lop.security, "DLR.TO");
+        assert_eq!(py.security, "DLR.TO");
 
         let expected_trade_date_s =
             time::Date::from_calendar_date(2026, time::Month::January, 7).unwrap();
@@ -434,8 +463,14 @@ mod tests {
         assert_eq!(lop.settlement_date, expected_settle_s);
         assert_eq!(py.settlement_date, expected_settle_s);
 
-        assert_eq!(lop.memo, format!("BMO Trade {}", expected_trade_date_s));
-        assert_eq!(py.memo, format!("BMO Trade {}", expected_trade_date_s));
+        assert_eq!(
+            lop.memo,
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+        );
+        assert_eq!(
+            py.memo,
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+        );
 
         assert_eq!(lop.account_number, "123-XXXXX123");
         assert_eq!(py.account_number, "123-XXXXX123");
@@ -484,9 +519,9 @@ mod tests {
         assert_eq!(lop.commission, dec!(9.93));
         assert_eq!(py.commission, dec!(9.93));
 
-        // Security name should match - we extract only the first line
-        assert_eq!(lop.security, "GLOBAL X US DLR CURRENCY");
-        assert_eq!(py.security, "GLOBAL X US DLR CURRENCY");
+        // Security should use canonical symbol
+        assert_eq!(lop.security, "DLR.TO");
+        assert_eq!(py.security, "DLR.TO");
 
         let expected_trade_date =
             time::Date::from_calendar_date(2026, time::Month::January, 7).unwrap();
@@ -497,8 +532,14 @@ mod tests {
         assert_eq!(lop.settlement_date, expected_settle);
         assert_eq!(py.settlement_date, expected_settle);
 
-        assert_eq!(lop.memo, format!("BMO Trade {}", expected_trade_date));
-        assert_eq!(py.memo, format!("BMO Trade {}", expected_trade_date));
+        assert_eq!(
+            lop.memo,
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+        );
+        assert_eq!(
+            py.memo,
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+        );
 
         assert_eq!(lop.account_number, "123-XXXXX123");
         assert_eq!(py.account_number, "123-XXXXX123");
@@ -510,6 +551,29 @@ mod tests {
         let expected_gross = dec!(14.01) * Decimal::from(12325u32);
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
+    }
+
+    #[test]
+    fn test_parse_buy_nocode_lopdf_pypdf() {
+        let lopdf_text =
+            read_sample("tests/data/bmo_scenarios/2026_sample/lopdf/buy_nocode.txt");
+        let pypdf_text =
+            read_sample("tests/data/bmo_scenarios/2026_sample/pypdf/buy_nocode.txt");
+
+        let lop =
+            parse_bmo_trade(&lopdf_text, &std::path::PathBuf::from("lopdf.txt"))
+                .unwrap();
+        let py =
+            parse_bmo_trade(&pypdf_text, &std::path::PathBuf::from("pypdf.txt"))
+                .unwrap();
+
+        // SECURITY NO. is not a resolvable alias, so fallback to security string from file
+        let expected_security = "GLOBAL X US DLR CURRENCY";
+        assert_eq!(lop.security, expected_security);
+        assert_eq!(py.security, expected_security);
+
+        assert_eq!(lop.memo, "BMO Trade ; G999999");
+        assert_eq!(py.memo, "BMO Trade ; G999999");
     }
 
     #[test]
