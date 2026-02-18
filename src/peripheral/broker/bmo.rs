@@ -220,7 +220,7 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
         if let Some(alias) = symbol_alias_resolver.resolve(code.as_str()) {
             (
                 alias.canonical.to_string(),
-                Some(format!("; {} AKA {} - {}", code, alias.aka, raw_security)),
+                Some(format!("; {} AKA {} - {}", code, alias.aka.unwrap_or(""), raw_security)),
             )
         } else {
             (raw_security.clone(), Some(format!("; {}", code)))

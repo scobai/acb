@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolAlias {
     pub canonical: &'static str,
-    pub aka: &'static str,
+    pub aka: Option<&'static str>,
 }
 
 /// Provides lookup for symbol aliases.
@@ -23,16 +23,23 @@ impl SymbolAliasResolver {
                 "H038778",
                 SymbolAlias {
                     canonical: "DLR.TO",
-                    aka: "DLR.U.TO",
+                    aka: Some("DLR.U.TO"),
                 },
             ),
             (
                 "G036247",
                 SymbolAlias {
                     canonical: "DLR.TO",
-                    aka: "DLR.U.TO",
+                    aka: Some("DLR.U.TO"),
                 },
             ),
+            (
+                "V009796",
+                SymbolAlias {
+                    canonical: "VEE.TO",
+                    aka: None,
+                },
+            )
             // Add more aliases here
         ]);
         Self { aliases }
@@ -60,7 +67,7 @@ mod tests {
 
         let alias = alias.unwrap();
         assert_eq!(alias.canonical, "DLR.TO");
-        assert_eq!(alias.aka, "DLR.U.TO");
+        assert_eq!(alias.aka, Some("DLR.U.TO"));
     }
     #[test]
     fn test_resolve_unknown_alias() {

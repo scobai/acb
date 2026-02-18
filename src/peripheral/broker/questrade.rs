@@ -182,7 +182,7 @@ pub fn sheet_to_txs(
             {
                 (
                     alias.canonical.to_string(),
-                    format!("; {pre_alias_symbol} AKA {}", alias.aka),
+                    format!("; {pre_alias_symbol} AKA {}", alias.aka.unwrap_or("")),
                 )
             } else {
                 (pre_alias_symbol, String::new())
