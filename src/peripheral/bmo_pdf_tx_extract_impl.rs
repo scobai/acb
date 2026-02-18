@@ -236,6 +236,18 @@ fn validate_unique_order_numbers(trades: &[bmo::BmoTrade]) -> Result<(), SError>
     Ok(())
 }
 
+/// Verify that the number of files parsed matches the number of trades generated.
+fn validate_file_trade_count(num_files: usize, num_trades: usize) -> Result<(), SError> {
+    if num_files != num_trades {
+        return Err(format!(
+            "File count mismatch: {} files parsed but {} trades generated. \
+            Each PDF should produce exactly one trade.",
+            num_files, num_trades
+        ));
+    }
+    Ok(())
+}
+
 pub fn run() -> Result<(), ()> {
     let args = Args::parse();
     run_with_args(
@@ -267,6 +279,10 @@ pub fn run_with_args(
     if parsed_trades.trades.is_empty() {
         write_errln!(err_w, "WARN: No trades entries");
     }
+
+    // Validate that the number of trades matches the number of files
+    validate_file_trade_count(args.files.len(), parsed_trades.trades.len())
+        .map_err(|e| write_errln!(err_w, "ERROR: {}", e))?;
 
     // Validate that all order numbers are unique (detect duplicate PDFs)
     validate_unique_order_numbers(&parsed_trades.trades)
@@ -549,6 +565,18 @@ mod tests {
         let pypdf_trades =
             parse_pdfs(&pypdf_files, false).expect("Failed to parse pypdf files");
 
+        // Verify file count matches trade count
+        assert_eq!(
+            lopdf_files.len(),
+            lopdf_trades.trades.len(),
+            "Each lopdf file should produce exactly one trade"
+        );
+        assert_eq!(
+            pypdf_files.len(),
+            pypdf_trades.trades.len(),
+            "Each pypdf file should produce exactly one trade"
+        );
+
         // Verify same number of trades
         assert_eq!(
             lopdf_trades.trades.len(),
@@ -604,6 +632,18 @@ mod tests {
         let pypdf_trades =
             parse_pdfs(&pypdf_files, false).expect("Failed to parse pypdf files");
 
+        // Verify file count matches trade count
+        assert_eq!(
+            lopdf_files.len(),
+            lopdf_trades.trades.len(),
+            "Each lopdf file should produce exactly one trade"
+        );
+        assert_eq!(
+            pypdf_files.len(),
+            pypdf_trades.trades.len(),
+            "Each pypdf file should produce exactly one trade"
+        );
+
         // Verify same number of trades
         assert_eq!(
             lopdf_trades.trades.len(),
@@ -657,6 +697,44 @@ mod tests {
         assert!(
             err_msg.contains("same PDF submitted multiple times"),
             "Error message should suggest same PDF, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_validate_file_trade_count() {
+        // Test successful validation
+        assert!(validate_file_trade_count(5, 5).is_ok());
+        assert!(validate_file_trade_count(0, 0).is_ok());
+        assert!(validate_file_trade_count(1, 1).is_ok());
+
+        // Test failed validation - more files than trades
+        let result = validate_file_trade_count(5, 3);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("File count mismatch"),
+            "Error should mention file count mismatch, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("5 files") && err_msg.contains("3 trades"),
+            "Error should include specific counts, got: {}",
+            err_msg
+        );
+
+        // Test failed validation - more trades than files
+        let result = validate_file_trade_count(2, 4);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("File count mismatch"),
+            "Error should mention file count mismatch, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("2 files") && err_msg.contains("4 trades"),
+            "Error should include specific counts, got: {}",
             err_msg
         );
     }
