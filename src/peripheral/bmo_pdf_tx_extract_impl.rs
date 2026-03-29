@@ -1,5 +1,5 @@
-TODO NO MERGE!!!
-Need something to deal with BMO's synthetic DRIP
+// TODO NO MERGE!!!
+// Need something to deal with BMO's synthetic DRIP
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -119,6 +119,7 @@ fn dump_extracted_data(
             "commission",
             "currency",
             "memo",
+            "order_number",
             "account",
             "account_type",
             "client_name",
@@ -139,6 +140,7 @@ fn dump_extracted_data(
             t.commission.to_string(),
             t.currency.to_string(),
             t.memo.clone(),
+            t.order_number.to_string(),
             t.account_number.clone(),
             t.account_type.clone(),
             t.client_name.clone(),
@@ -151,9 +153,22 @@ fn dump_extracted_data(
 
 /// Constructs/extracts CsvTxs from the parsed BMO trades.
 fn txs_from_trades(trades: &[bmo::BmoTrade]) -> Result<Vec<CsvTx>, SError> {
+    // Pre-sort trades by (trade_date, settlement_date, order_number, original_index)
+    // so that same-day trades are ordered by order number before read_index is assigned.
+    // This ensures a buy with a lower order number than a same-day sell is processed first.
+    let mut indexed: Vec<(usize, &bmo::BmoTrade)> =
+        trades.iter().enumerate().collect();
+    indexed.sort_by(|(ia, a), (ib, b)| {
+        a.trade_date
+            .cmp(&b.trade_date)
+            .then(a.settlement_date.cmp(&b.settlement_date))
+            .then_with(|| a.order_number.cmp(&b.order_number))
+            .then(ia.cmp(ib))
+    });
+
     let mut csv_txs = Vec::new();
 
-    for (i, trade) in trades.iter().enumerate() {
+    for (read_index, (_, trade)) in indexed.into_iter().enumerate() {
         // Only accept CAD or USD from BMO trade confirmations
         if trade.currency != Currency::cad() && trade.currency != Currency::usd() {
             return Err(format!(
@@ -183,7 +198,7 @@ fn txs_from_trades(trades: &[bmo::BmoTrade]) -> Result<Vec<CsvTx>, SError> {
             specified_superficial_loss: None,
             // TODO handle stock splits.
             stock_split_ratio: None,
-            read_index: i.try_into().unwrap(),
+            read_index: read_index.try_into().unwrap(),
         };
         csv_txs.push(csv_tx);
     }
@@ -217,17 +232,18 @@ fn render_txs_from_trades(
 fn validate_unique_order_numbers(trades: &[bmo::BmoTrade]) -> Result<(), SError> {
     use std::collections::HashMap;
 
-    let mut order_counts: HashMap<&str, usize> = HashMap::new();
+    let mut order_counts: HashMap<u64, usize> = HashMap::new();
 
     for trade in trades {
-        *order_counts.entry(&trade.order_number).or_insert(0) += 1;
+        *order_counts.entry(trade.order_number).or_insert(0) += 1;
     }
 
-    let duplicates: Vec<_> = order_counts
+    let mut duplicates: Vec<_> = order_counts
         .iter()
         .filter(|(_, count)| **count > 1)
         .map(|(order_no, count)| format!("ORDER NO. {}: {} occurrences", order_no, count))
         .collect();
+    duplicates.sort();
 
     if !duplicates.is_empty() {
         return Err(format!(
@@ -385,6 +401,11 @@ mod tests {
                 "Trade {}: gross_amount mismatch",
                 i
             );
+            assert_eq!(
+                lop_trade.order_number, py_trade.order_number,
+                "Trade {}: order_number mismatch",
+                i
+            );
         }
     }
 
@@ -410,12 +431,12 @@ mod tests {
                 num_shares: "12345".parse().unwrap(),
                 commission: "9.93".parse().unwrap(),
                 currency: Currency::cad(),
-                memo: "BMO Trade 2026-01-07".to_string(),
+                memo: "BMO Trade 2026-01-07 | ORDER NO. 123456".to_string(),
                 account_number: "123-XXXXX123".to_string(),
                 account_type: "CSH".to_string(),
                 client_name: "MR JOHN DOE".to_string(),
                 gross_amount: "172953.45".parse().unwrap(),
-                order_number: "123456".to_string(),
+                order_number: 123456,
             },
             bmo::BmoTrade {
                 security: "IVV".to_string(),
@@ -436,12 +457,12 @@ mod tests {
                 num_shares: "12345".parse().unwrap(),
                 commission: "9.93".parse().unwrap(),
                 currency: Currency::usd(),
-                memo: "BMO Trade 2026-01-07".to_string(),
+                memo: "BMO Trade 2026-01-07 | ORDER NO. 654321".to_string(),
                 account_number: "123-XXXXX123".to_string(),
                 account_type: "CSH".to_string(),
                 client_name: "MR JOHN DOE".to_string(),
                 gross_amount: "172953.45".parse().unwrap(),
-                order_number: "654321".to_string(),
+                order_number: 654321,
             },
         ];
 
@@ -463,7 +484,6 @@ mod tests {
                         .unwrap()
                 )
             );
-            assert_eq!(tx.memo, Some("BMO Trade 2026-01-07".to_string()));
             assert_eq!(tx.commission, Some("9.93".parse().unwrap()));
             assert_eq!(tx.shares, Some("12345".parse().unwrap()));
             assert_eq!(tx.amount_per_share, Some("14.01".parse().unwrap()));
@@ -475,13 +495,97 @@ mod tests {
             if tx.security.as_ref().unwrap() == "XUS.TO" {
                 assert_eq!(tx.action, Some(TxAction::Sell));
                 assert_eq!(tx.tx_currency, Some(Currency::cad()));
+                assert_eq!(
+                    tx.memo,
+                    Some("BMO Trade 2026-01-07 | ORDER NO. 123456".to_string())
+                );
             } else if tx.security.as_ref().unwrap() == "IVV" {
                 assert_eq!(tx.action, Some(TxAction::Buy));
                 assert_eq!(tx.tx_currency, Some(Currency::usd()));
+                assert_eq!(
+                    tx.memo,
+                    Some("BMO Trade 2026-01-07 | ORDER NO. 654321".to_string())
+                );
             } else {
                 panic!("Unexpected security: {:?}", tx.security);
             }
         }
+    }
+
+    #[test]
+    fn test_txs_from_trades_same_day_sorted_by_order_number() {
+        // Trades are given in reverse order (sell#200 before buy#100) to verify
+        // that txs_from_trades re-orders them by order number, putting buy first.
+        let trades = vec![
+            bmo::BmoTrade {
+                security: "DLR.TO".to_string(),
+                trade_date: time::Date::from_calendar_date(
+                    2026,
+                    time::Month::January,
+                    7,
+                )
+                .unwrap(),
+                settlement_date: time::Date::from_calendar_date(
+                    2026,
+                    time::Month::January,
+                    8,
+                )
+                .unwrap(),
+                action: TxAction::Sell,
+                amount_per_share: "14.01".parse().unwrap(),
+                num_shares: "20".parse().unwrap(),
+                commission: "0.00".parse().unwrap(),
+                currency: Currency::cad(),
+                memo: "BMO Trade | ORDER NO. 200".to_string(),
+                account_number: "123-XXXXX123".to_string(),
+                account_type: "CSH".to_string(),
+                client_name: "MR JOHN DOE".to_string(),
+                gross_amount: "280.20".parse().unwrap(),
+                order_number: 200,
+            },
+            bmo::BmoTrade {
+                security: "DLR.TO".to_string(),
+                trade_date: time::Date::from_calendar_date(
+                    2026,
+                    time::Month::January,
+                    7,
+                )
+                .unwrap(),
+                settlement_date: time::Date::from_calendar_date(
+                    2026,
+                    time::Month::January,
+                    8,
+                )
+                .unwrap(),
+                action: TxAction::Buy,
+                amount_per_share: "14.00".parse().unwrap(),
+                num_shares: "20".parse().unwrap(),
+                commission: "0.00".parse().unwrap(),
+                currency: Currency::cad(),
+                memo: "BMO Trade | ORDER NO. 100".to_string(),
+                account_number: "123-XXXXX123".to_string(),
+                account_type: "CSH".to_string(),
+                client_name: "MR JOHN DOE".to_string(),
+                gross_amount: "280.00".parse().unwrap(),
+                order_number: 100,
+            },
+        ];
+
+        let txs = txs_from_trades(&trades).unwrap();
+        assert_eq!(txs.len(), 2);
+        // Buy (order 100) must come before Sell (order 200)
+        assert_eq!(txs[0].action, Some(TxAction::Buy),
+            "expected buy first (lower order number)");
+        assert_eq!(txs[1].action, Some(TxAction::Sell),
+            "expected sell second (higher order number)");
+        assert_eq!(
+            txs[0].memo.as_deref(),
+            Some("BMO Trade | ORDER NO. 100")
+        );
+        assert_eq!(
+            txs[1].memo.as_deref(),
+            Some("BMO Trade | ORDER NO. 200")
+        );
     }
 
     #[test]
@@ -510,7 +614,7 @@ mod tests {
             account_type: "CSH".to_string(),
             client_name: "MR JOHN DOE".to_string(),
             gross_amount: "172953.45".parse().unwrap(),
-            order_number: "999999".to_string(),
+            order_number: 999999,
         }];
 
         let res = txs_from_trades(&trades);

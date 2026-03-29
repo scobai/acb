@@ -58,14 +58,21 @@ impl SymbolAliasResolver {
                 "B074348",
                 SymbolAlias {
                     canonical: "BMT USD HISA",
-                    aka: Some("BMT124/BMT129"),
+                    aka: Some("BMT124/BMT129/BMT134"),
                 },
             ),
             (
                 "B074364",
                 SymbolAlias {
                     canonical: "BMT USD HISA",
-                    aka: Some("BMT124/BMT129"),
+                    aka: Some("BMT124/BMT129/BMT134"),
+                },
+            ),
+            (
+                "B074380",
+                SymbolAlias {
+                    canonical: "BMT USD HISA",
+                    aka: Some("BMT124/BMT129/BMT134"),
                 },
             )
             // Add more aliases here

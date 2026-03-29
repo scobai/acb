@@ -152,7 +152,7 @@ pub struct BmoTrade {
     pub account_type: String,
     pub client_name: String,
     pub gross_amount: Decimal,
-    pub order_number: String,
+    pub order_number: u64,
 }
 
 /// Parse a single BMO trade confirmation from text.
@@ -314,8 +314,14 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
     let gross_amount = srch(&gross_pat).dec1(text)?;
 
     // Extract order number (e.g., "ORDER NO. 999123")
-    let order_number = srch(r"(?i)ORDER\s+NO\.\s+(\d+)")
-        .str1(text)?;
+    // Mandatory: every BMO trade confirmation must have a numeric ORDER NO.
+    let order_number_str = srch(r"(?i)ORDER\s+NO\.\s+(\d+)").str1(text)?;
+    let order_number: u64 = order_number_str
+        .parse()
+        .map_err(|e| format!("Could not parse ORDER NO. '{}': {}", order_number_str, e))?;
+
+    let base_memo =
+        format!("BMO Trade {}", orig_symbol_note.as_deref().unwrap_or(""));
 
     Ok(BmoTrade {
         security,
@@ -326,7 +332,7 @@ pub fn parse_bmo_trade(text: &str, _filename: &Path) -> Result<BmoTrade, SError>
         num_shares,
         commission,
         currency,
-        memo: format!("BMO Trade {}", orig_symbol_note.as_deref().unwrap_or("")),
+        memo: format!("{} | ORDER NO. {}", base_memo, order_number),
         account_number,
         account_type,
         client_name,
@@ -423,11 +429,11 @@ mod tests {
 
         assert_eq!(
             lop.memo,
-            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY | ORDER NO. 987611"
         );
         assert_eq!(
             py.memo,
-            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY | ORDER NO. 987611"
         );
 
         assert_eq!(lop.account_number, "123-XXXXX123");
@@ -441,8 +447,8 @@ mod tests {
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
 
-        assert_eq!(lop.order_number, "987611");
-        assert_eq!(py.order_number, "987611");
+        assert_eq!(lop.order_number, 987611);
+        assert_eq!(py.order_number, 987611);
     }
 
     #[test]
@@ -495,11 +501,11 @@ mod tests {
 
         assert_eq!(
             lop.memo,
-            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY | ORDER NO. 987612"
         );
         assert_eq!(
             py.memo,
-            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY | ORDER NO. 987612"
         );
 
         assert_eq!(lop.account_number, "123-XXXXX123");
@@ -513,8 +519,8 @@ mod tests {
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
 
-        assert_eq!(lop.order_number, "987612");
-        assert_eq!(py.order_number, "987612");
+        assert_eq!(lop.order_number, 987612);
+        assert_eq!(py.order_number, 987612);
     }
 
     #[test]
@@ -567,11 +573,11 @@ mod tests {
 
         assert_eq!(
             lop.memo,
-            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY | ORDER NO. 987613"
         );
         assert_eq!(
             py.memo,
-            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY"
+            "BMO Trade ; G036247 AKA DLR.U.TO - GLOBAL X US DLR CURRENCY | ORDER NO. 987613"
         );
 
         assert_eq!(lop.account_number, "123-XXXXX123");
@@ -585,8 +591,8 @@ mod tests {
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
 
-        assert_eq!(lop.order_number, "987613");
-        assert_eq!(py.order_number, "987613");
+        assert_eq!(lop.order_number, 987613);
+        assert_eq!(py.order_number, 987613);
     }
 
     #[test]
@@ -608,11 +614,11 @@ mod tests {
         assert_eq!(lop.security, expected_security);
         assert_eq!(py.security, expected_security);
 
-        assert_eq!(lop.memo, "BMO Trade ; G999999");
-        assert_eq!(py.memo, "BMO Trade ; G999999");
+        assert_eq!(lop.memo, "BMO Trade ; G999999 | ORDER NO. 987611");
+        assert_eq!(py.memo, "BMO Trade ; G999999 | ORDER NO. 987611");
 
-        assert_eq!(lop.order_number, "987611");
-        assert_eq!(py.order_number, "987611");
+        assert_eq!(lop.order_number, 987611);
+        assert_eq!(py.order_number, 987611);
     }
 
     #[test]
@@ -704,11 +710,11 @@ mod tests {
 
         assert_eq!(
             lop.memo,
-            "BMO Trade ; V009796 - VANGUARDFTSE EMERGING MKTS"
+            "BMO Trade ; V009796 - VANGUARDFTSE EMERGING MKTS | ORDER NO. 999123"
         );
         assert_eq!(
             py.memo,
-            "BMO Trade ; V009796 - VANGUARDFTSE EMERGING MKTS"
+            "BMO Trade ; V009796 - VANGUARDFTSE EMERGING MKTS | ORDER NO. 999123"
         );
 
         assert_eq!(lop.account_number, "999-9999999");
@@ -722,8 +728,8 @@ mod tests {
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
 
-        assert_eq!(lop.order_number, "999123");
-        assert_eq!(py.order_number, "999123");
+        assert_eq!(lop.order_number, 999123);
+        assert_eq!(py.order_number, 999123);
     }
 
     #[test]
@@ -772,11 +778,11 @@ mod tests {
 
         assert_eq!(
             lop.memo,
-            "BMO Trade ; B074340 AKA BMT104/BMT109 - BANK OF MONTREAL CAD HISA"
+            "BMO Trade ; B074340 AKA BMT104/BMT109 - BANK OF MONTREAL CAD HISA | ORDER NO. 999999"
         );
         assert_eq!(
             py.memo,
-            "BMO Trade ; B074340 AKA BMT104/BMT109 - BANK OF MONTREAL CAD HISA"
+            "BMO Trade ; B074340 AKA BMT104/BMT109 - BANK OF MONTREAL CAD HISA | ORDER NO. 999999"
         );
 
         assert_eq!(lop.account_number, "999-9999999");
@@ -790,7 +796,35 @@ mod tests {
         assert_eq!(lop.gross_amount, expected_gross);
         assert_eq!(py.gross_amount, expected_gross);
 
-        assert_eq!(lop.order_number, "999999");
-        assert_eq!(py.order_number, "999999");
+        assert_eq!(lop.order_number, 999999);
+        assert_eq!(py.order_number, 999999);
+    }
+
+    #[test]
+    fn test_parse_bmo_trade_missing_order_number_errors() {
+        // A minimal valid confirmation body with ORDER NO. stripped out.
+        // parse_bmo_trade must return an error—not silently accept a missing order number.
+        let text = r#"
+DATE JANUARY 7, 2026
+SETTLEMENT DATE JANUARY 8, 2026
+TRANSACTION TYPE BOUGHT
+Quantity Security Unit Price
+50 VANGUARD FTSE EMERGING MKTS @ 32.6300C$
+SECURITY NO. V009796
+GROSS AMOUNT 1631.50
+CLIENT NAME MR JOHN DOE
+"#;
+
+        let result =
+            parse_bmo_trade(text, &std::path::PathBuf::from("test.txt"));
+        assert!(
+            result.is_err(),
+            "Expected parse_bmo_trade to fail when ORDER NO. is absent"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_lowercase().contains("order"),
+            "Error message should mention ORDER, got: {err}"
+        );
     }
 }
