@@ -6,7 +6,11 @@ use time::Date;
 use super::BrokerTx;
 use crate::{
     portfolio::TxAction,
-    util::{basic::SError, date::StaticDateFormat, decimal::parse_large_decimal},
+    util::{
+        basic::SError,
+        date::{DateRange, StaticDateFormat},
+        decimal::parse_large_decimal,
+    },
 };
 
 use lazy_static::lazy_static;
@@ -149,6 +153,29 @@ pub struct BenefitEntry {
     pub acquire_share_price: Decimal,
     pub acquire_shares: Decimal,
 
+    // Sell-to-cover fields for trade confirmation matching
+    // (see find_sell_to_cover_trade_set and amend_paired_benefit_sales):
+    //
+    // - sell_to_cover_shares: Required for matching. This is the primary key
+    //   used to find matching trade confirmations (by summing share counts
+    //   across candidate trade combos). If None, the benefit is skipped for
+    //   sell-to-cover pairing entirely.
+    //
+    // - sell_to_cover_price: Optional tiebreaker. When multiple trade combos
+    //   match by share count, the combo whose weighted-average price is
+    //   closest to this value wins. If None, ambiguous matches produce an
+    //   error. (Available from benefit PDFs; not available from xlsx.)
+    //
+    // - sell_to_cover_tx_date, sell_to_cover_settle_date: Populated by
+    //   amend_paired_benefit_sales from the matched trade confirmation.
+    //   Not expected to be set by parsers (benefit PDFs and xlsx both lack
+    //   these; trade confirmation PDFs are the authoritative source).
+    //
+    // - sell_to_cover_fee: Populated from benefit PDFs if available, otherwise
+    //   filled in by amend_paired_benefit_sales from matched trades.
+    //
+    // All five fields must be Some for sell_to_cover_data() to return
+    // Ok(Some(...)). The amend step is responsible for completing the set.
     pub sell_to_cover_tx_date: Option<Date>,
     pub sell_to_cover_settle_date: Option<Date>,
     pub sell_to_cover_price: Option<Decimal>,
@@ -943,6 +970,252 @@ pub fn parse_pdf_text(
     }
 }
 
+// MARK: BenefitHistory xlsx parsing
+
+/// Parses a date in "DD-MON-YYYY" format (e.g. "15-FEB-2017").
+fn parse_etrade_dmy_date(date_str: &str) -> Result<Date, SError> {
+    let parts: Vec<&str> = date_str.split('-').collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "Expected DD-MON-YYYY date format, got \"{date_str}\""
+        ));
+    }
+    let day: u8 =
+        parts[0].parse().map_err(|e| format!("Bad day in \"{date_str}\": {e}"))?;
+    let month = match parts[1].to_uppercase().as_str() {
+        "JAN" => time::Month::January,
+        "FEB" => time::Month::February,
+        "MAR" => time::Month::March,
+        "APR" => time::Month::April,
+        "MAY" => time::Month::May,
+        "JUN" => time::Month::June,
+        "JUL" => time::Month::July,
+        "AUG" => time::Month::August,
+        "SEP" => time::Month::September,
+        "OCT" => time::Month::October,
+        "NOV" => time::Month::November,
+        "DEC" => time::Month::December,
+        _ => {
+            return Err(format!("Unknown month \"{}\" in \"{date_str}\"", parts[1]))
+        }
+    };
+    let year: i32 =
+        parts[2].parse().map_err(|e| format!("Bad year in \"{date_str}\": {e}"))?;
+    Date::from_calendar_date(year, month, day).map_err(|e| e.to_string())
+}
+
+/// Parses a dollar-prefixed string like "$100.67" into a Decimal.
+fn parse_dollar_str(s: &str) -> Result<Decimal, SError> {
+    let stripped = s.trim().trim_start_matches('$');
+    parse_large_decimal(stripped)
+        .map_err(|e| format!("Failed to parse dollar value \"{s}\": {e}"))
+}
+
+#[cfg(feature = "xlsx_read")]
+fn parse_espp_benefits_from_sheet(
+    range: &calamine::Range<calamine::Data>,
+    filename: &str,
+) -> Result<Vec<BenefitEntry>, SError> {
+    use crate::peripheral::excel::SheetReader;
+
+    let mut rows = range.rows();
+    let mut reader = SheetReader::new(&mut rows).map_err(|e| e.to_string())?;
+    let mut benefits = Vec::new();
+
+    for (i, row) in rows.enumerate() {
+        reader.set_row(row, i + 2);
+
+        let record_type =
+            reader.get_str("Record Type").map_err(|e| e.to_string())?;
+        if record_type != "Purchase" {
+            continue;
+        }
+
+        let symbol = reader.get_str("Symbol").map_err(|e| e.to_string())?;
+        let purchase_date_str =
+            reader.get_str("Purchase Date").map_err(|e| e.to_string())?;
+        let purchase_date = parse_etrade_dmy_date(&purchase_date_str)?;
+
+        let fmv_str =
+            reader.get_str("Purchase Date FMV").map_err(|e| e.to_string())?;
+        let fmv = parse_dollar_str(&fmv_str)?;
+
+        let purchased_qty =
+            reader.get_dec("Purchased Qty.").map_err(|e| e.to_string())?;
+        let tax_shares = reader
+            .get_opt_dec("Tax Collection Shares")
+            .map_err(|e| e.to_string())?;
+
+        let sell_to_cover_shares = match tax_shares {
+            Some(s) if !s.is_zero() => Some(s),
+            _ => None,
+        };
+
+        benefits.push(BenefitEntry {
+            security: symbol,
+            acquire_tx_date: purchase_date,
+            acquire_settle_date: purchase_date,
+            acquire_share_price: fmv,
+            acquire_shares: purchased_qty,
+            sell_to_cover_tx_date: None,
+            sell_to_cover_settle_date: None,
+            sell_to_cover_price: None,
+            sell_to_cover_shares,
+            sell_to_cover_fee: None,
+            plan_note: "ESPP".to_string(),
+            sell_note: None,
+            filename: filename.to_string(),
+        });
+    }
+
+    Ok(benefits)
+}
+
+#[cfg(feature = "xlsx_read")]
+fn parse_rsu_benefits_from_sheet(
+    range: &calamine::Range<calamine::Data>,
+    filename: &str,
+) -> Result<Vec<BenefitEntry>, SError> {
+    use crate::peripheral::excel::SheetReader;
+
+    let mut rows = range.rows();
+    let mut reader = SheetReader::new(&mut rows).map_err(|e| e.to_string())?;
+
+    let mut benefits = Vec::new();
+    let mut current_symbol = String::new();
+    let mut current_grant_number = String::new();
+
+    // Collect rows so we can look ahead for Tax Withholding after Vest Schedule.
+    let all_rows: Vec<&[calamine::Data]> = rows.collect();
+
+    let mut i = 0;
+    while i < all_rows.len() {
+        let row = all_rows[i];
+        reader.set_row(row, i + 2);
+
+        let record_type =
+            reader.get_str("Record Type").map_err(|e| e.to_string())?;
+
+        match record_type.as_str() {
+            "Grant" => {
+                current_symbol =
+                    reader.get_str("Symbol").map_err(|e| e.to_string())?;
+                current_grant_number =
+                    reader.get_str("Grant Number").map_err(|e| e.to_string())?;
+            }
+            "Vest Schedule" => {
+                let released_qty = reader
+                    .get_opt_dec("Released Qty")
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or(Decimal::ZERO);
+
+                if released_qty.is_zero() {
+                    i += 1;
+                    continue;
+                }
+
+                let vest_date_str =
+                    reader.get_str("Vest Date").map_err(|e| e.to_string())?;
+                let vest_date =
+                    Date::parse(&vest_date_str, ETRADE_SLASH_DATE_FORMAT).map_err(
+                        |e| format!("Bad vest date \"{vest_date_str}\": {e}"),
+                    )?;
+
+                // Look ahead for the Tax Withholding row to get Taxable Gain.
+                let taxable_gain = if i + 1 < all_rows.len() {
+                    reader.set_row(all_rows[i + 1], i + 3);
+                    let next_type =
+                        reader.get_str("Record Type").map_err(|e| e.to_string())?;
+                    if next_type == "Tax Withholding" {
+                        let gain = reader
+                            .get_dec("Taxable Gain")
+                            .map_err(|e| e.to_string())?;
+                        i += 1; // consume the Tax Withholding row
+                        gain
+                    } else {
+                        return Err(format!(
+                            "Expected Tax Withholding row after Vest Schedule \
+                             for {} on {vest_date_str}, got \"{next_type}\"",
+                            current_grant_number
+                        ));
+                    }
+                } else {
+                    return Err(format!(
+                        "Missing Tax Withholding row after Vest Schedule \
+                         for {} on {vest_date_str}",
+                        current_grant_number
+                    ));
+                };
+
+                let fmv_per_share = taxable_gain / released_qty;
+
+                benefits.push(BenefitEntry {
+                    security: current_symbol.clone(),
+                    acquire_tx_date: vest_date,
+                    acquire_settle_date: vest_date,
+                    acquire_share_price: fmv_per_share,
+                    acquire_shares: released_qty,
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: None,
+                    sell_to_cover_fee: None,
+                    plan_note: format!("RSU {}", current_grant_number),
+                    sell_note: None,
+                    filename: filename.to_string(),
+                });
+            }
+            _ => {} // Skip Event, Tax Withholding (handled via look-ahead), etc.
+        }
+
+        i += 1;
+    }
+
+    Ok(benefits)
+}
+
+#[cfg(feature = "xlsx_read")]
+pub fn parse_benefit_history_xlsx(
+    data: Vec<u8>,
+    filename: &str,
+    date_range: Option<&DateRange>,
+) -> Result<Vec<BenefitEntry>, SError> {
+    let sheets = crate::peripheral::excel::read_xl_data_sheets(
+        data,
+        &["ESPP", "Restricted Stock"],
+    )?;
+    let mut benefits = Vec::new();
+
+    if sheets.is_empty() {
+        return Err(
+            "No ESPP or Restricted Stock sheets found in BenefitHistory xlsx"
+                .to_string(),
+        );
+    }
+
+    if let Some(espp_range) = sheets.get("ESPP") {
+        benefits.extend(parse_espp_benefits_from_sheet(espp_range, filename)?);
+    }
+    if let Some(rs_range) = sheets.get("Restricted Stock") {
+        benefits.extend(parse_rsu_benefits_from_sheet(rs_range, filename)?);
+    }
+
+    if let Some(range) = date_range {
+        benefits.retain(|b| range.contains(&b.acquire_settle_date));
+    }
+
+    Ok(benefits)
+}
+
+/// Filters benefits to only those whose acquire_settle_date falls within the
+/// given date range.
+pub fn filter_benefits_by_date(
+    benefits: &mut Vec<BenefitEntry>,
+    date_range: &DateRange,
+) {
+    benefits.retain(|b| date_range.contains(&b.acquire_settle_date));
+}
+
 // MARK: tests
 
 #[cfg(test)]
@@ -1043,7 +1316,87 @@ mod tests {
                 sell_note: None,
                 filename: s("myrsu.pdf"),
             },
+        );
+
+        // pdfjs-based output
+        if !crate::util::node::node_available() {
+            if std::env::var("ALLOW_NO_NODE").is_ok() {
+                eprintln!("WARNING: node not available, skipping pdfjs RSU test");
+                return;
+            }
+            panic!("node not available. Set ALLOW_NO_NODE=1 to skip pdfjs tests.");
+        }
+        let pdf_text = "Release Summary
+Account Number 11223344
+Tax Payment Method Sell-to-cover
+Company Name (Symbol) FOO SYSTEMS, INC.
+(FOO)
+Award Number R98765
+Award Date 05-08-2020
+Award Type RSU
+Plan 2014
+Release Date 10-20-2023
+Shares Released 1,234.0000
+Market Value Per Share $215.350000
+Award Price Per Share $0.000000
+Sale Price Per Share $213.773300
+Release Details
+Calculation of Gain
+Market Value $26,488.05
+Award Price ($0.00)
+Total Gain $26,488.05
+Stock Distribution
+Award Shares 123.0000
+Shares Sold (67.0000)
+Shares Issued 56.0000
+Registration: Morgan Stanley Smith Barney
+Calculation of Taxes
+Taxable Gain $ Rate % Amount $
+Canada-BC 26,488.05 53.50000 14,171.10
+Total Tax $14,171.10
+Cash Distribution
+Total Sale Price $14,322.81
+Total Tax ($14,171.10)
+Fee ($4.13)
+Total Due Participant $147.58
+EMPLOYEE STOCK PLAN RELEASE CONFIRMATION
+Provided by Foo Inc.
+John Doe
+1234 Main St
+Halifax, NS CA B3D 8
+Employee ID: 1111
+This information was provided by your company to E*TRADE from Morgan Stanley, a registered trademark of Morgan Stanley Smith Barney LLC, Member SIPC.
+Morgan Stanley and its affiliates do not guarantee the accuracy or completeness of the information provided by your company. If a sale is associated with these shares,
+the trade confirmation provided by Morgan Stanley Smith Barney LLC is the accurate record of the sales transaction.
+The data shown on this statement is based on your company's records. The company reserves the right to make corrections to this data. The release shown on this
+statement is subject to the terms of the plan under which the release was made.
+12/01/2025 03:35:23 PM ET Page 1 of1
+";
+
+        let rsu_entry = parse_rsu_entry(
+            pdf_text,
+            &std::path::PathBuf::from("foo/bar/myrsu.pdf"),
         )
+        .unwrap();
+
+        assert_big_struct_eq(
+            rsu_entry,
+            BenefitEntry {
+                security: "FOO".to_string(),
+                acquire_tx_date: date("2023-10-20"),
+                acquire_settle_date: date("2023-10-20"),
+                acquire_share_price: dec!(215.35),
+                acquire_shares: dec!(1234),
+                sell_to_cover_tx_date: None,
+                sell_to_cover_settle_date: None,
+                sell_to_cover_price: Some(dec!(213.7733)),
+                sell_to_cover_shares: Some(dec!(67)),
+                sell_to_cover_fee: Some(dec!(4.13)),
+                plan_note: s("RSU R98765"),
+                sell_note: None,
+                filename: s("myrsu.pdf"),
+            },
+        );
     }
 
     // lopdf-based output
@@ -1236,6 +1589,97 @@ mod tests {
         John Doe
         Employee ID: 1111
         ";
+
+        let espp_entry = parse_espp_entry(
+            pdf_text,
+            &std::path::PathBuf::from("foo/bar/myespp.pdf"),
+        )
+        .unwrap();
+
+        assert_big_struct_eq(
+            espp_entry,
+            BenefitEntry {
+                security: "FOO".to_string(),
+                acquire_tx_date: date("2023-10-20"),
+                acquire_settle_date: date("2023-10-20"),
+                acquire_share_price: dec!(215.35),
+                acquire_shares: dec!(123),
+                sell_to_cover_tx_date: None,
+                sell_to_cover_settle_date: None,
+                sell_to_cover_price: Some(dec!(213.7733)),
+                sell_to_cover_shares: Some(dec!(67)),
+                sell_to_cover_fee: Some(dec!(4.13)),
+                plan_note: s("ESPP"),
+                sell_note: None,
+                filename: s("myespp.pdf"),
+            },
+        );
+
+        // pdfjs-based output
+        if !crate::util::node::node_available() {
+            if std::env::var("ALLOW_NO_NODE").is_ok() {
+                eprintln!("WARNING: node not available, skipping pdfjs ESPP test");
+                return;
+            }
+            panic!("node not available. Set ALLOW_NO_NODE=1 to skip pdfjs tests.");
+        }
+        let pdf_text = "Purchase Summary
+Account Number 11223344
+Company Name (Symbol) Foo Systems,
+INC.(FOO)
+Plan ESP2
+Grant Date 08-01-2022
+Purchase Begin Date 01-01-2023
+Purchase Date 10-20-2023
+Shares Purchased to Date in Current Offering
+Beginning Balance 0.0000
+Shares Purchased 123.0000
+Total shares Purchased for Offering 124.0000
+Shares Deposited in STREETNAME to
+Morgan Stanley Smith Barney
+124.0000
+Shares Sold to Cover Taxes 67.0000
+Purchase Details
+Contributions
+Foreign Contributions 1,000,000.00
+Average Exchange Rate $0.740000
+Previous Carry Forward $0.00
+Current Contributions $0.00
+Total Contributions $0.00*
+Total Price ($5,000.00)
+Carry Forward ($0.00)
+Calculation of Gain
+Total Value $1,000,000.00
+Total Price ($1,000,000.00)
+Taxable Gain $1,000,000.00
+Calculation of Shares Purchased
+Grant Date Market Value $10.990
+Purchase Value per Share $215.350000
+Purchase Price per Share
+(90.000% of $215.350000) $193.81500
+Total Price
+(Shares Purchased x Purchase Price) $1,000,000.00
+Sale Price for Shares Sold to Cover Taxes $213.773300
+Tax Assessment $1,840.84
+Fees ($4.13)
+Adjusted Tax Assessment $1,000,000.00
+Amount in Excess of Tax Due $0.00
+Excess of Taxes Applied To
+Cash Due Participant
+Net Carry Forward $0.00
+EMPLOYEE STOCK PLAN PURCHASE CONFIRMATION
+Provided by Foo Inc.
+John Doe
+1234 Main St
+Halifax, NS CA B3D 8
+Employee ID: 1111
+This information was provided to E*TRADE Securities LLC, a subsidiary of Morgan Stanley, (\"E*TRADE\") by your company. E*TRADE does not guarantee the accuracy
+or completeness of the information provided by your company. If a sale is associated with these shares, the trade confirmation provided by E*TRADE Securities LLC is
+the only accurate record of the sale transaction.
+The data shown on this statement is based on your company's records. The company reserves the right to make corrections to this data. The purchase shown on this
+statement is subject to the terms of the plan under which the purchase was made.
+12/01/2025 03:34:58 PM ET Page 1 of1
+";
 
         let espp_entry = parse_espp_entry(
             pdf_text,
@@ -1592,5 +2036,472 @@ mod tests {
                 filename: Some(s("tconf.pdf")),
             },
         );
+
+        // pdfjs-based output
+        if !crate::util::node::node_available() {
+            if std::env::var("ALLOW_NO_NODE").is_ok() {
+                eprintln!(
+                    "WARNING: node not available, skipping pdfjs trade confirmation test"
+                );
+                return;
+            }
+            panic!("node not available. Set ALLOW_NO_NODE=1 to skip pdfjs tests.");
+        }
+        let pdf_text = "Morgan Stanley Smith Barney LLC. Member SIPC. The transaction(s) may have been executed with Morgan Stanley & Co. LLC, an
+affiliate, which may receive compensation for any such services. E*TRADE is a business of Morgan Stanley.
+1 of 2
+Your Account Number: 123-XXX123-123
+Account Type - Cash
+JOHN DOE
+1234 STREET AVE.
+VANCOUVER BRITISH COLUMBIA H0H 0H0
+CANADA
+E*TRADE from Morgan Stanley
+P.O. BOX 484
+JERSEY CITY, NJ 07303-0484
+(800)-387-2331
+This transaction is confirmed in accordance with the information provided on the Conditions and Disclosures page.
+Trade Date Settlement Date Quantity Price Settlement Amount
+11/01/2023 11/03/2023 123 200.01
+Transaction Type: Sold Short
+Description: FOOSYSTEMS INC
+Symbol / CUSIP / ISIN: FOO / 123456789 / US0123456789
+Principal $24,601.23
+Commission $3.91
+Supplemental
+Transaction Fee $0.21
+Net Amount $24,605.35
+Unsolicited trade
+Sell short exempt
+Morgan Stanley Smith Barney LLC acted as agent.
+2 of 2
+";
+
+        let tx = parse_post_ms_2023_trade_confirmation(
+            pdf_text,
+            &std::path::PathBuf::from("foo/bar/tconf.pdf"),
+        )
+        .unwrap();
+
+        assert_big_struct_eq(
+            tx,
+            BrokerTx {
+                security: s("FOO"),
+                trade_date: date("2023-11-01"),
+                settlement_date: date("2023-11-03"),
+                trade_date_and_time: s("11/01/2023"),
+                settlement_date_and_time: s("11/03/2023"),
+                action: TxAction::Sell,
+                amount_per_share: dec!(200.01),
+                num_shares: dec!(123),
+                commission: dec!(4.12),
+                currency: crate::portfolio::Currency::usd(),
+                memo: s(""),
+                exchange_rate: None,
+                affiliate: crate::portfolio::Affiliate::default(),
+                row_num: 1,
+                account: new_account(s("123-XXX123-123")),
+                sort_tiebreak: None,
+                filename: Some(s("tconf.pdf")),
+            },
+        );
+    }
+
+    // MARK: BenefitHistory xlsx tests
+
+    #[cfg(all(feature = "xlsx_read", feature = "xlsx_write"))]
+    mod benefit_history_tests {
+        use rust_decimal_macros::dec;
+        use rust_xlsxwriter::Workbook;
+
+        use crate::{
+            testlib::assert_big_struct_eq, util::date::parse_standard_date,
+        };
+
+        use super::super::{
+            filter_benefits_by_date, parse_benefit_history_xlsx,
+            parse_etrade_dmy_date, BenefitEntry,
+        };
+        use crate::util::date::DateRange;
+
+        fn date(date_str: &str) -> time::Date {
+            parse_standard_date(date_str).unwrap()
+        }
+
+        fn make_xlsx_bytes(build: impl FnOnce(&mut Workbook)) -> Vec<u8> {
+            let mut wb = Workbook::new();
+            build(&mut wb);
+            wb.save_to_buffer().unwrap()
+        }
+
+        #[test]
+        fn test_parse_dmy_date() {
+            assert_eq!(
+                parse_etrade_dmy_date("15-FEB-2017").unwrap(),
+                date("2017-02-15")
+            );
+            assert_eq!(
+                parse_etrade_dmy_date("01-JAN-2024").unwrap(),
+                date("2024-01-01")
+            );
+            assert_eq!(
+                parse_etrade_dmy_date("31-DEC-2020").unwrap(),
+                date("2020-12-31")
+            );
+            assert!(parse_etrade_dmy_date("bad-date").is_err());
+            assert!(parse_etrade_dmy_date("01-XYZ-2020").is_err());
+        }
+
+        fn build_espp_sheet(wb: &mut Workbook) {
+            let sheet = wb.add_worksheet().set_name("ESPP").unwrap();
+            // Header
+            let headers = [
+                "Record Type",
+                "Symbol",
+                "Purchase Date",
+                "Purchase Price",
+                "Purchased Qty.",
+                "Tax Collection Shares",
+                "Net Shares",
+                "Sellable Qty.",
+                "Est. Market Value",
+                "Grant Date",
+                "Discount Percent",
+                "Grant Date FMV",
+                "Purchase Date FMV",
+                "Qualified Plan?",
+                "Contribution Source",
+                "Pending Sale Qty.",
+                "Blocked Qty.",
+                "Transferable Date",
+                "First Sellable Date",
+                "Date",
+                "Event Type",
+                "Qty",
+            ];
+            for (c, h) in headers.iter().enumerate() {
+                sheet.write(0, c as u16, *h).unwrap();
+            }
+            // Purchase row: no sell-to-cover
+            sheet.write(1, 0, "Purchase").unwrap();
+            sheet.write(1, 1, "FOO").unwrap();
+            sheet.write(1, 2, "15-FEB-2017").unwrap();
+            sheet.write(1, 3, 50.28).unwrap();
+            sheet.write(1, 4, 32.0).unwrap();
+            sheet.write(1, 5, 0.0).unwrap();
+            sheet.write(1, 6, 32.0).unwrap();
+            sheet.write(1, 12, "$100.67").unwrap();
+            // Event row (should be skipped)
+            sheet.write(2, 0, "Event").unwrap();
+            sheet.write(2, 19, "02/15/2017").unwrap();
+            sheet.write(2, 20, "PURCHASE").unwrap();
+            sheet.write(2, 21, 32.0).unwrap();
+            // Purchase row: with sell-to-cover
+            sheet.write(3, 0, "Purchase").unwrap();
+            sheet.write(3, 1, "FOO").unwrap();
+            sheet.write(3, 2, "15-FEB-2022").unwrap();
+            sheet.write(3, 3, 45.69).unwrap();
+            sheet.write(3, 4, 57.0).unwrap();
+            sheet.write(3, 5, 21.0).unwrap();
+            sheet.write(3, 6, 36.0).unwrap();
+            sheet.write(3, 12, "$129.94").unwrap();
+        }
+
+        #[test]
+        fn test_parse_espp_benefits() {
+            let data = make_xlsx_bytes(build_espp_sheet);
+            let benefits =
+                parse_benefit_history_xlsx(data, "test.xlsx", None).unwrap();
+            assert_eq!(benefits.len(), 2);
+
+            assert_big_struct_eq(
+                benefits[0].clone(),
+                BenefitEntry {
+                    security: "FOO".to_string(),
+                    acquire_tx_date: date("2017-02-15"),
+                    acquire_settle_date: date("2017-02-15"),
+                    acquire_share_price: dec!(100.67),
+                    acquire_shares: dec!(32),
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: None,
+                    sell_to_cover_fee: None,
+                    plan_note: "ESPP".to_string(),
+                    sell_note: None,
+                    filename: "test.xlsx".to_string(),
+                },
+            );
+
+            assert_big_struct_eq(
+                benefits[1].clone(),
+                BenefitEntry {
+                    security: "FOO".to_string(),
+                    acquire_tx_date: date("2022-02-15"),
+                    acquire_settle_date: date("2022-02-15"),
+                    acquire_share_price: dec!(129.94),
+                    acquire_shares: dec!(57),
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: Some(dec!(21)),
+                    sell_to_cover_fee: None,
+                    plan_note: "ESPP".to_string(),
+                    sell_note: None,
+                    filename: "test.xlsx".to_string(),
+                },
+            );
+        }
+
+        fn build_rsu_sheet(wb: &mut Workbook) {
+            let sheet = wb.add_worksheet().set_name("Restricted Stock").unwrap();
+            // Header — only columns we actually read need real names;
+            // the rest are placeholders.
+            let headers = [
+                "Record Type",     // 0
+                "Symbol",          // 1
+                "Grant Date",      // 2
+                "Settlement Type", // 3
+                "Granted Qty.",    // 4
+                "Withheld Qty.",   // 5
+                "Vested Qty.",     // 6
+                "col7",
+                "col8",
+                "col9",         // 7-9
+                "Grant Number", // 10
+                "col11",
+                "col12",
+                "col13",
+                "col14",
+                "col15",
+                "col16",
+                "col17",
+                "col18",
+                "col19",
+                "col20",
+                "Date",           // 21
+                "Event Type",     // 22
+                "Qty. or Amount", // 23
+                "Vest Period",    // 24
+                "Vest Date",      // 25
+                "col26",
+                "col27",
+                "col28",
+                "col29",
+                "col30",
+                "col31",
+                "Vested Qty.",        // 32 (duplicate name — last wins)
+                "Released Qty",       // 33
+                "Released Amount",    // 34
+                "Sellable Qty.",      // 35
+                "Blocked Qty.",       // 36
+                "Total Taxes Paid",   // 37
+                "Tax Description",    // 38
+                "Taxable Gain",       // 39
+                "Effective Tax Rate", // 40
+                "Withholding Amount", // 41
+            ];
+            for (c, h) in headers.iter().enumerate() {
+                sheet.write(0, c as u16, *h).unwrap();
+            }
+            // Grant row
+            sheet.write(1, 0, "Grant").unwrap();
+            sheet.write(1, 1, "BAR").unwrap();
+            sheet.write(1, 2, "08-MAY-2020").unwrap();
+            sheet.write(1, 10, "R12345").unwrap();
+            // Event row (skipped)
+            sheet.write(2, 0, "Event").unwrap();
+            sheet.write(2, 10, "R12345").unwrap();
+            sheet.write(2, 21, "02/22/2021").unwrap();
+            sheet.write(2, 22, "Shares sold").unwrap();
+            sheet.write(2, 23, 50.0).unwrap();
+            // Vest Schedule with Released Qty > 0
+            sheet.write(3, 0, "Vest Schedule").unwrap();
+            sheet.write(3, 10, "R12345").unwrap();
+            sheet.write(3, 24, 1.0).unwrap(); // Vest Period
+            sheet.write(3, 25, "02/20/2021").unwrap(); // Vest Date
+            sheet.write(3, 33, 100.0).unwrap(); // Released Qty
+            sheet.write(3, 37, 5000.0).unwrap(); // Total Taxes Paid
+                                                 // Tax Withholding for vest period 1
+            sheet.write(4, 0, "Tax Withholding").unwrap();
+            sheet.write(4, 10, "R12345").unwrap();
+            sheet.write(4, 24, 1.0).unwrap();
+            sheet.write(4, 39, 3000.0).unwrap(); // Taxable Gain
+                                                 // Vest Schedule with Released Qty = 0 (future vest, skipped)
+            sheet.write(5, 0, "Vest Schedule").unwrap();
+            sheet.write(5, 10, "R12345").unwrap();
+            sheet.write(5, 24, 2.0).unwrap();
+            sheet.write(5, 25, "05/20/2026").unwrap();
+            sheet.write(5, 33, 0.0).unwrap();
+            // Second vest with data
+            sheet.write(6, 0, "Vest Schedule").unwrap();
+            sheet.write(6, 10, "R12345").unwrap();
+            sheet.write(6, 24, 3.0).unwrap();
+            sheet.write(6, 25, "08/20/2021").unwrap();
+            sheet.write(6, 33, 200.0).unwrap();
+            sheet.write(6, 37, 10000.0).unwrap();
+            // Tax Withholding for vest period 3
+            sheet.write(7, 0, "Tax Withholding").unwrap();
+            sheet.write(7, 10, "R12345").unwrap();
+            sheet.write(7, 24, 3.0).unwrap();
+            sheet.write(7, 39, 8000.0).unwrap(); // FMV = 8000/200 = 40
+        }
+
+        #[test]
+        fn test_parse_rsu_benefits() {
+            let data = make_xlsx_bytes(build_rsu_sheet);
+            let benefits =
+                parse_benefit_history_xlsx(data, "test.xlsx", None).unwrap();
+            assert_eq!(benefits.len(), 2);
+
+            assert_big_struct_eq(
+                benefits[0].clone(),
+                BenefitEntry {
+                    security: "BAR".to_string(),
+                    acquire_tx_date: date("2021-02-20"),
+                    acquire_settle_date: date("2021-02-20"),
+                    acquire_share_price: dec!(30), // 3000 / 100
+                    acquire_shares: dec!(100),
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: None,
+                    sell_to_cover_fee: None,
+                    plan_note: "RSU R12345".to_string(),
+                    sell_note: None,
+                    filename: "test.xlsx".to_string(),
+                },
+            );
+
+            assert_big_struct_eq(
+                benefits[1].clone(),
+                BenefitEntry {
+                    security: "BAR".to_string(),
+                    acquire_tx_date: date("2021-08-20"),
+                    acquire_settle_date: date("2021-08-20"),
+                    acquire_share_price: dec!(40), // 8000 / 200
+                    acquire_shares: dec!(200),
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: None,
+                    sell_to_cover_fee: None,
+                    plan_note: "RSU R12345".to_string(),
+                    sell_note: None,
+                    filename: "test.xlsx".to_string(),
+                },
+            );
+        }
+
+        #[test]
+        fn test_parse_combined_espp_and_rsu() {
+            let data = make_xlsx_bytes(|wb| {
+                build_espp_sheet(wb);
+                build_rsu_sheet(wb);
+            });
+            let benefits =
+                parse_benefit_history_xlsx(data, "combined.xlsx", None).unwrap();
+            // 2 ESPP + 2 RSU
+            assert_eq!(benefits.len(), 4);
+            assert_eq!(benefits[0].plan_note, "ESPP");
+            assert_eq!(benefits[1].plan_note, "ESPP");
+            assert_eq!(benefits[2].plan_note, "RSU R12345");
+            assert_eq!(benefits[3].plan_note, "RSU R12345");
+        }
+
+        #[test]
+        fn test_parse_espp_with_date_range_filter() {
+            let data = make_xlsx_bytes(build_espp_sheet);
+            let range = DateRange::for_year(2022);
+            let benefits =
+                parse_benefit_history_xlsx(data, "test.xlsx", Some(&range)).unwrap();
+            // Only the 2022 ESPP entry should survive
+            assert_eq!(benefits.len(), 1);
+            assert_eq!(benefits[0].acquire_tx_date, date("2022-02-15"));
+        }
+
+        #[test]
+        fn test_parse_rsu_with_date_range_filter() {
+            let data = make_xlsx_bytes(build_rsu_sheet);
+            // Both RSU vests are in 2021; filtering for 2022 should return none
+            let range = DateRange::for_year(2022);
+            let benefits =
+                parse_benefit_history_xlsx(data.clone(), "test.xlsx", Some(&range))
+                    .unwrap();
+            assert_eq!(benefits.len(), 0);
+
+            // Filtering for 2021 should return both
+            let range = DateRange::for_year(2021);
+            let benefits =
+                parse_benefit_history_xlsx(data, "test.xlsx", Some(&range)).unwrap();
+            assert_eq!(benefits.len(), 2);
+        }
+
+        #[test]
+        fn test_filter_benefits_by_date() {
+            let mut benefits = vec![
+                BenefitEntry {
+                    security: "FOO".to_string(),
+                    acquire_tx_date: date("2021-03-15"),
+                    acquire_settle_date: date("2021-03-17"),
+                    acquire_share_price: dec!(50),
+                    acquire_shares: dec!(10),
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: None,
+                    sell_to_cover_fee: None,
+                    plan_note: "ESPP".to_string(),
+                    sell_note: None,
+                    filename: "test".to_string(),
+                },
+                // tx_date in 2021, but settle_date in 2022 — should be
+                // included when filtering for 2022
+                BenefitEntry {
+                    security: "FOO".to_string(),
+                    acquire_tx_date: date("2021-12-30"),
+                    acquire_settle_date: date("2022-01-03"),
+                    acquire_share_price: dec!(55),
+                    acquire_shares: dec!(15),
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: None,
+                    sell_to_cover_fee: None,
+                    plan_note: "ESPP".to_string(),
+                    sell_note: None,
+                    filename: "test".to_string(),
+                },
+                BenefitEntry {
+                    security: "FOO".to_string(),
+                    acquire_tx_date: date("2022-06-15"),
+                    acquire_settle_date: date("2022-06-17"),
+                    acquire_share_price: dec!(60),
+                    acquire_shares: dec!(20),
+                    sell_to_cover_tx_date: None,
+                    sell_to_cover_settle_date: None,
+                    sell_to_cover_price: None,
+                    sell_to_cover_shares: None,
+                    sell_to_cover_fee: None,
+                    plan_note: "ESPP".to_string(),
+                    sell_note: None,
+                    filename: "test".to_string(),
+                },
+            ];
+            let range = DateRange::for_year(2022);
+            filter_benefits_by_date(&mut benefits, &range);
+            assert_eq!(benefits.len(), 2);
+            // Cross-year entry included based on settle date, not tx date
+            assert_eq!(benefits[0].acquire_settle_date, date("2022-01-03"));
+            assert_eq!(benefits[1].acquire_settle_date, date("2022-06-17"));
+        }
+
+        #[test]
+        fn test_parse_empty_xlsx_errors() {
+            let data = make_xlsx_bytes(|wb| {
+                wb.add_worksheet().set_name("OtherSheet").unwrap();
+            });
+            assert!(parse_benefit_history_xlsx(data, "empty.xlsx", None).is_err());
+        }
     }
 }

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use lazy_static::lazy_static;
 
-use office::Range;
+use calamine::{Data, Range};
 use time::Date;
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
         broker::{Account, BrokerTx, FxTracker, FxtRow},
         sheet_common::SheetParseError,
     },
-    portfolio::{Affiliate, Currency, TxAction},
+    portfolio::{Currency, TxAction},
     util::{basic::SError, date::parse_standard_date},
 };
 
@@ -21,7 +21,7 @@ const QUESTRADE_ACCOUNT_BROKER_NAME: &str = "Questrade";
 
 /// Converts a QT spreadsheet into Txs
 pub fn sheet_to_txs(
-    sheet: &Range,
+    sheet: &Range<Data>,
     fpath: Option<&std::path::Path>,
 ) -> Result<Vec<BrokerTx>, SheetToTxsErr> {
     // Column names:
@@ -52,6 +52,7 @@ pub fn sheet_to_txs(
             SheetToTxsErr {
                 txs: None,
                 errors: vec![e],
+                warnings: vec![],
             }
         })?;
 
@@ -100,16 +101,7 @@ pub fn sheet_to_txs(
                 account_num,
             };
 
-            let affiliate = if regex::RegexBuilder::new(r"rrsp|tfsa|resp")
-                .case_insensitive(true)
-                .build()
-                .unwrap()
-                .is_match(&account.account_type)
-            {
-                Affiliate::default_registered()
-            } else {
-                Affiliate::default()
-            };
+            let affiliate = super::affiliate_for_account_type(&account.account_type);
 
             if action_str == "FXT" {
                 let fxt_row = FxtRow {
@@ -240,6 +232,7 @@ pub fn sheet_to_txs(
         Err(SheetToTxsErr {
             txs: Some(txs),
             errors: errors,
+            warnings: vec![],
         })
     } else {
         Ok(txs)

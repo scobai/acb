@@ -5,13 +5,14 @@
     "type": "module",
     "scripts": {
         "render-templates": "node render.cjs",
+        "typecheck": "tsc --noEmit",
         "build-ts": "vite build",
         "watch-ts": "vite build --watch",
-        "static-dist-link": "make static-dist-link",
+        "dist-static-links-and-debug": "make dist-static-links-and-debug",
         "wasm-pkg": "make wasm-pkg",
         "clean": "make clean",
-        "pre-build": "npm install && npm run wasm-pkg && npm run static-dist-link",
-        "build": "npm run render-templates && npm run build-ts",
+        "pre-build": "npm install && npm run wasm-pkg && npm run dist-static-links-and-debug",
+        "build": "npm run render-templates && npm run typecheck && npm run build-ts",
         "vite-dev": "vite",
         "lint": "eslint . --ext .ts",
         "lint:fix": "eslint . --ext .ts --fix",
@@ -19,17 +20,23 @@
         "all": "npm run pre-build && npm run lint && npm run build"
     },
     "dependencies": {
-        "jszip": "^3.10.1"
+        "jszip": "^3.10.1",
+        "papaparse": "^5.5.3",
+        "pdfjs-dist": "^5.5.207",
+        "vue": "^3.5.29"
     },
     "devDependencies": {
-        "@typescript-eslint/eslint-plugin": "^8.32.0",
-        "@typescript-eslint/parser": "^8.32.0",
+        "@types/papaparse": "^5.5.2",
+        "@typescript-eslint/eslint-plugin": "^8.57.0",
+        "@typescript-eslint/parser": "^8.57.0",
+        "@vitejs/plugin-vue": "^6.0.5",
         "ejs": "^3.1.10",
         "eslint": "^9.26.0",
         "eslint-plugin-import": "^2.31.0",
         "http-server": "^14.1.1",
         "terser": "^5.42.0",
-        "typescript": "^5.0.0",
-        "vite": "^6.4.1"
+        "typescript": "^5.9.3",
+        "vite": "^8.0.0",
+        "vite-svg-loader": "^5.1.1"
     }
 }

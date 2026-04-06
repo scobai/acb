@@ -28,21 +28,23 @@ fn validate_sample_csv_file(
     let (write_handle, buff) = WriteHandle::string_buff_write_handle();
     let writer = Box::new(TextWriter::new(write_handle));
 
+    let mut rate_loader = RateLoader::new(
+        false,
+        Box::new(CsvRatesCache::new(
+            cache_dir.to_path_buf(),
+            err_stream.clone(),
+        )),
+        JsonRemoteRateLoader::new_boxed(StandaloneAppRequester::new_boxed()),
+        err_stream.clone(),
+    );
+
     let res = async_std::task::block_on(run_acb_app_to_writer(
         writer,
         vec![reader],
         &TxCsvParseOptions::default(),
         false,
         render_costs,
-        RateLoader::new(
-            false,
-            Box::new(CsvRatesCache::new(
-                cache_dir.to_path_buf(),
-                err_stream.clone(),
-            )),
-            JsonRemoteRateLoader::new_boxed(StandaloneAppRequester::new_boxed()),
-            err_stream.clone(),
-        ),
+        &mut rate_loader,
         err_stream.clone(),
     ));
 
@@ -97,4 +99,44 @@ fn do_test_sample_csv_file_validity(render_costs: bool) {
 fn test_sample_csv_file_validity() {
     do_test_sample_csv_file_validity(false);
     do_test_sample_csv_file_validity(true);
+}
+
+#[test]
+fn test_sample_csv_parse_errors() {
+    acb::util::date::set_todays_date_for_test(
+        parse_standard_date("2025-01-01").unwrap(),
+    );
+
+    let dir = NonAutoCreatingTestDir::new();
+    let csv_path = Path::new("./tests/data/sample_csv_errors.csv");
+    let reader = DescribedReader::from_file_path(csv_path.into());
+
+    let (err_stream, err_buff) = WriteHandle::string_buff_write_handle();
+    let (write_handle, _buff) = WriteHandle::string_buff_write_handle();
+    let writer = Box::new(TextWriter::new(write_handle));
+
+    let mut rate_loader = RateLoader::new(
+        false,
+        Box::new(CsvRatesCache::new(dir.path.clone(), err_stream.clone())),
+        JsonRemoteRateLoader::new_boxed(StandaloneAppRequester::new_boxed()),
+        err_stream.clone(),
+    );
+
+    let res = async_std::task::block_on(run_acb_app_to_writer(
+        writer,
+        vec![reader],
+        &TxCsvParseOptions::default(),
+        false,
+        false,
+        &mut rate_loader,
+        err_stream,
+    ));
+
+    assert!(res.is_err(), "Expected error, but got Ok");
+    let err_text = err_buff.borrow().as_str().to_string();
+    assert!(
+        err_text.contains("Invalid action 'InvalidAction'"),
+        "err: {}",
+        err_text
+    );
 }

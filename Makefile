@@ -2,7 +2,21 @@ SHELL := /bin/bash
 
 build: rust
 
-rust:
+ensure-fnm:
+	@if ! command -v fnm &>/dev/null && ! test -f "$$HOME/.cargo/bin/fnm"; then \
+		echo ""; \
+		echo "WARNING: fnm (Fast Node Manager) is not installed."; \
+		echo "Without it, the pdf-text Node.js (pdfjs-dist) reader and the webapp will not work."; \
+		echo ""; \
+		read -p "Install fnm via 'cargo install fnm'? [y/N] " answer; \
+		if [ "$$answer" = "y" ] || [ "$$answer" = "Y" ]; then \
+			cargo install fnm; \
+		else \
+			echo "Skipping fnm install. Node.js features will be unavailable."; \
+		fi; \
+	fi
+
+rust: ensure-fnm
 	cargo build
 
 release:
@@ -45,10 +59,10 @@ test-py:
 	make -C py test
 
 rustfmt:
-	rustfmt --config-path . `find src tests www -type f -name '*.rs'`
+	rustfmt --config-path . `find src tests acb_wasm www -type f -name '*.rs'`
 
 check-rustfmt:
-	rustfmt --check --config-path . `find src tests www -type f -name '*.rs'`
+	rustfmt --check --config-path . `find src tests acb_wasm www -type f -name '*.rs'`
 
 install:
 	cargo install --path .

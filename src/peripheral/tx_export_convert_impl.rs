@@ -1,54 +1,27 @@
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::Path;
 use std::path::PathBuf;
 
 use clap::Parser;
 use regex::Regex;
 use rust_decimal::Decimal;
 
-use office::{Excel, Range};
-
 use crate::app::outfmt::csv::CsvWriter;
 use crate::app::outfmt::model::AcbWriter;
 use crate::app::outfmt::text::TextWriter;
 use crate::peripheral::broker::Account;
+use crate::peripheral::broker::{FileDetectSource, FileKind};
+use crate::portfolio::CsvTx;
 use crate::portfolio::Currency;
 use crate::util::basic::SError;
+use crate::util::date::DateRange;
 use crate::util::rw::WriteHandle;
 use crate::write_errln;
 
 use super::broker::questrade;
+use super::broker::rbc_di;
 use super::broker::BrokerTx;
-
-/// Reads the named sheet or the only sheet.
-/// If no sheet name is provided, there must only be a single sheet,
-/// otherwise returns Err.
-///
-/// Note: This could not/cannot be based on the sheet index,
-/// because the office library does not provide an API to get the
-/// sheets in any particular order. They end up coming back in a random
-/// order.
-fn read_xl_file(path: &Path, sheet_name: Option<&str>) -> Result<Range, SError> {
-    let mut workbook = Excel::open(path).map_err(|e| format!("{e}"))?;
-
-    let sheet_names: Vec<String>;
-
-    let sheet = if let Some(sn) = sheet_name {
-        sn
-    } else {
-        sheet_names = workbook.sheet_names().map_err(|e| format!("{e}"))?;
-        if sheet_names.len() > 1 {
-            return Err(format!(
-                "Workbook has more than one one sheet: {sheet_names:?}. \
-                Sheet name must be specified"
-            ));
-        }
-        sheet_names.get(0).ok_or_else(|| "Workbook has no sheets".to_string())?
-    };
-
-    workbook.worksheet_range(sheet).map_err(|e| format!("{e}"))
-}
+use super::excel::{read_xl_source, XlSource};
 
 fn filter_and_verify_tx_accounts(
     account_filter: &Option<Regex>,
@@ -82,6 +55,7 @@ fn filter_and_verify_tx_accounts(
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum BrokerArg {
     Questrade,
+    RbcDi,
 }
 
 impl std::fmt::Display for BrokerArg {
@@ -91,23 +65,195 @@ impl std::fmt::Display for BrokerArg {
     }
 }
 
-/// A convenience script to convert export spreadsheets from brokerages to the ACB
+fn detect_broker(path: &std::path::Path) -> Result<BrokerArg, SError> {
+    let result = super::broker::detect_file_kind(FileDetectSource::Path(path))?;
+    match result.kind {
+        FileKind::QuestradeExcel => Ok(BrokerArg::Questrade),
+        FileKind::RbcDiCsv => Ok(BrokerArg::RbcDi),
+        _ => {
+            let hint = result.warning.map(|w| format!(" ({w})")).unwrap_or_default();
+            Err(format!(
+                "Could not auto-detect broker for \"{}\"{hint}. \
+                 Please specify --broker.",
+                path.display()
+            ))
+        }
+    }
+}
+
+struct BrokerResult {
+    txs: Vec<BrokerTx>,
+    non_fatal_errors: Vec<String>,
+    warnings: Vec<String>,
+}
+
+/// Unwraps a broker parser result into a `BrokerResult`, or returns
+/// a fatal `Err` when no partial output is available.
+fn unwrap_broker_result(
+    tx_res: Result<Vec<BrokerTx>, super::broker::SheetToTxsErr>,
+) -> Result<BrokerResult, SError> {
+    match tx_res {
+        Ok(txs) => Ok(BrokerResult {
+            txs,
+            non_fatal_errors: vec![],
+            warnings: vec![],
+        }),
+        Err(res_err) => {
+            if let Some(partial_txs) = res_err.txs {
+                let errs = res_err.errors.iter().map(|e| format!("{e}")).collect();
+                let warns =
+                    res_err.warnings.iter().map(|e| format!("{e}")).collect();
+                Ok(BrokerResult {
+                    txs: partial_txs,
+                    non_fatal_errors: errs,
+                    warnings: warns,
+                })
+            } else {
+                // Fatal error. No partial output.
+                let errs: Vec<String> =
+                    res_err.errors.iter().map(|e| format!("{e}")).collect();
+                Err(errs.join("\n"))
+            }
+        }
+    }
+}
+
+/// Applies common post-processing to broker transactions: account/security
+/// filtering, FX filtering, exchange rate override, sorting, and conversion
+/// to CsvTx.
+fn process_broker_txs(
+    mut txs: Vec<BrokerTx>,
+    account_filter: Option<Regex>,
+    security_filter: Option<Regex>,
+    no_fx: bool,
+    no_sort: bool,
+    usd_exchange_rate: Option<Decimal>,
+) -> Result<Vec<CsvTx>, SError> {
+    txs = filter_and_verify_tx_accounts(&account_filter, txs)?;
+
+    if let Some(pattern) = security_filter {
+        txs = txs.into_iter().filter(|tx| pattern.is_match(&tx.security)).collect();
+    }
+    if no_fx {
+        txs = txs.into_iter().filter(|tx| !tx.security.ends_with(".FX")).collect();
+    }
+    if let Some(rate) = usd_exchange_rate {
+        for tx in &mut txs {
+            if tx.currency == Currency::usd() {
+                tx.exchange_rate = Some(rate)
+            }
+        }
+    }
+    if !no_sort {
+        txs.sort();
+    }
+
+    Ok(txs.into_iter().map(|t| t.into()).collect())
+}
+
+pub struct ConvertResult {
+    pub csv_txs: Vec<CsvTx>,
+    pub non_fatal_errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Converts an Excel workbook into a list of CSV transactions.
+///
+/// Returns a `ConvertResult` with `csv_txs` (possibly partial) plus any
+/// non-fatal `errors` and `warnings`.
+/// Returns `Err` only on fatal errors where no output can be produced.
+pub fn convert_xl_txs(
+    source: XlSource,
+    broker: &BrokerArg,
+    sheet: Option<&str>,
+    account_filter: Option<Regex>,
+    security_filter: Option<Regex>,
+    no_fx: bool,
+    no_sort: bool,
+    usd_exchange_rate: Option<Decimal>,
+) -> Result<ConvertResult, SError> {
+    let source_path: Option<PathBuf> = match &source {
+        XlSource::Path(p) => Some(p.clone()),
+        XlSource::Data(_) => None,
+    };
+
+    let rg = read_xl_source(source, sheet)?;
+
+    let tx_res = match broker {
+        BrokerArg::Questrade => questrade::sheet_to_txs(&rg, source_path.as_deref()),
+        BrokerArg::RbcDi => {
+            return Err("RBC DI uses CSV format, not Excel. \
+                        Please provide a .csv file."
+                .to_string())
+        }
+    };
+
+    let broker_res = unwrap_broker_result(tx_res)?;
+    let csv_txs = process_broker_txs(
+        broker_res.txs,
+        account_filter,
+        security_filter,
+        no_fx,
+        no_sort,
+        usd_exchange_rate,
+    )?;
+    Ok(ConvertResult {
+        csv_txs,
+        non_fatal_errors: broker_res.non_fatal_errors,
+        warnings: broker_res.warnings,
+    })
+}
+
+/// Converts a CSV broker export file into a list of CSV transactions.
+///
+/// Returns a `ConvertResult` with `csv_txs` (possibly partial) plus any
+/// non-fatal `errors` and `warnings`.
+/// Returns `Err` only on fatal errors where no output can be produced.
+pub fn convert_csv_broker_txs(
+    csv_data: &[u8],
+    fpath: Option<&std::path::Path>,
+    account_filter: Option<Regex>,
+    security_filter: Option<Regex>,
+    no_fx: bool,
+    no_sort: bool,
+    usd_exchange_rate: Option<Decimal>,
+) -> Result<ConvertResult, SError> {
+    let tx_res = rbc_di::csv_to_txs(csv_data, fpath);
+
+    let broker_res = unwrap_broker_result(tx_res)?;
+    let csv_txs = process_broker_txs(
+        broker_res.txs,
+        account_filter,
+        security_filter,
+        no_fx,
+        no_sort,
+        usd_exchange_rate,
+    )?;
+    Ok(ConvertResult {
+        csv_txs,
+        non_fatal_errors: broker_res.non_fatal_errors,
+        warnings: broker_res.warnings,
+    })
+}
+
+/// A convenience script to convert export files from brokerages to the ACB
 /// transaction csv format.
-/// Currently only supports Questrade.
+/// Supports Questrade (.xlsx) and RBC Direct Investing (.csv).
 #[derive(Parser, Debug)]
 #[command(author, about)]
 pub struct Args {
     /// Table file exported from your brokerage platform.
-    /// A .xlsx for Questrade
+    /// A .xlsx for Questrade, a .csv for RBC Direct Investing.
     #[arg(required = true)]
     pub export_file: PathBuf,
 
     #[arg(long, default_value_t = false)]
     pub no_sort: bool,
 
-    #[arg(short = 'b', long, default_value_t = BrokerArg::Questrade,
-          ignore_case = true)]
-    pub broker: BrokerArg,
+    /// Broker whose export format to parse. If omitted, auto-detected from
+    /// the file contents.
+    #[arg(short = 'b', long, ignore_case = true)]
+    pub broker: Option<BrokerArg>,
 
     /// Specify an exchange rate to use.
     ///
@@ -140,6 +286,10 @@ pub struct Args {
     /// Select which sheet (by name) in the spreadsheet file to use.
     #[arg(long)]
     pub sheet: Option<String>,
+
+    /// Only include transactions whose settlement date falls in this year.
+    #[arg(long)]
+    pub year: Option<i32>,
 }
 
 pub fn run() -> Result<(), ()> {
@@ -156,67 +306,67 @@ pub fn run_with_args(
     out_w: WriteHandle,
     mut err_w: WriteHandle,
 ) -> Result<(), ()> {
-    let rg = match read_xl_file(
-        &args.export_file,
-        args.sheet.as_ref().map(|v| v.as_str()),
-    ) {
-        Ok(rg) => rg,
-        Err(e) => {
-            write_errln!(err_w, "{e}");
-            return Err(());
-        }
-    };
+    let date_range = args.year.map(DateRange::for_year);
 
-    let tx_res = match args.broker {
-        BrokerArg::Questrade => {
-            questrade::sheet_to_txs(&rg, Some(&args.export_file))
-        }
-    };
-
-    let (mut txs, errors) = match tx_res {
-        Ok(txs) => (txs, None),
-        Err(res_err) => {
-            if let Some(partial_txs) = res_err.txs {
-                (partial_txs, Some(res_err.errors))
-            } else {
-                // Fatal error. No partial output.
-                let _ = write!(err_w, "Error:");
-                for e in res_err.errors {
-                    write_errln!(err_w, "{e}");
-                }
+    let broker = match args.broker {
+        Some(b) => b,
+        None => match detect_broker(&args.export_file) {
+            Ok(b) => b,
+            Err(e) => {
+                write_errln!(err_w, "{e}");
                 return Err(());
             }
-        }
+        },
     };
 
-    txs = match filter_and_verify_tx_accounts(&args.account, txs) {
-        Ok(txs_) => txs_,
+    let convert_result = match broker {
+        BrokerArg::RbcDi => {
+            let data = std::fs::read(&args.export_file).map_err(|e| {
+                write_errln!(
+                    err_w,
+                    "Failed to read {}: {e}",
+                    args.export_file.display()
+                );
+            })?;
+            convert_csv_broker_txs(
+                &data,
+                Some(args.export_file.as_path()),
+                args.account,
+                args.security,
+                args.no_fx,
+                args.no_sort,
+                args.usd_exchange_rate,
+            )
+        }
+        BrokerArg::Questrade => convert_xl_txs(
+            XlSource::Path(args.export_file.clone()),
+            &broker,
+            args.sheet.as_deref(),
+            args.account,
+            args.security,
+            args.no_fx,
+            args.no_sort,
+            args.usd_exchange_rate,
+        ),
+    };
+
+    let convert_res = match convert_result {
+        Ok(result) => result,
         Err(e) => {
             write_errln!(err_w, "{e}");
             return Err(());
         }
     };
 
-    if let Some(pattern) = args.security {
-        txs = txs.into_iter().filter(|tx| pattern.is_match(&tx.security)).collect();
-    }
-    if args.no_fx {
-        txs = txs.into_iter().filter(|tx| !tx.security.ends_with(".FX")).collect();
-    }
-    if let Some(rate) = args.usd_exchange_rate {
-        for tx in &mut txs {
-            if tx.currency == Currency::usd() {
-                tx.exchange_rate = Some(rate)
-            }
-        }
-    }
-    if !args.no_sort {
-        txs.sort();
-    }
-
-    // Convert to CsvTx (at least. Maybe even to Tx and back too)
-    let csv_txs: Vec<crate::portfolio::CsvTx> =
-        txs.into_iter().map(|t| t.into()).collect();
+    let csv_txs = if let Some(ref range) = date_range {
+        convert_res
+            .csv_txs
+            .into_iter()
+            .filter(|tx| tx.settlement_date.map_or(false, |d| range.contains(&d)))
+            .collect()
+    } else {
+        convert_res.csv_txs
+    };
 
     let mut printer: Box<dyn AcbWriter> = if args.pretty {
         Box::new(TextWriter::new(out_w))
@@ -239,9 +389,15 @@ pub fn run_with_args(
             write_errln!(err_w, "{e}");
         })?;
 
-    if let Some(es) = errors {
+    if !convert_res.warnings.is_empty() {
+        let _ = write!(err_w, "Warnings:");
+        for w in &convert_res.warnings {
+            write_errln!(err_w, " - {w}");
+        }
+    }
+    if !convert_res.non_fatal_errors.is_empty() {
         let _ = write!(err_w, "Errors:");
-        for e in es {
+        for e in &convert_res.non_fatal_errors {
             write_errln!(err_w, " - {e}");
         }
         Err(())

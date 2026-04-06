@@ -1,7 +1,10 @@
 import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
+import svgLoader from 'vite-svg-loader';
 import packageJson from './package.json';
 
 export default defineConfig({
+  plugins: [vue(), svgLoader()],
   build: {
     minify: 'terser',
     terserOptions: {
@@ -18,6 +21,7 @@ export default defineConfig({
         semicolons: false // Insert newlines instead of semicolons
       }
     },
+    chunkSizeWarningLimit: 1500,
     sourcemap: true,
     outDir: 'dist/js',
     assetsDir: 'assets',
@@ -29,11 +33,20 @@ export default defineConfig({
       output: {
         entryFileNames: '[name].js',
         chunkFileNames: '[name]-[hash].js',
+        // Fixed css name so index.ejs can reference it with a <link> tag.
+        // (Vite doesn't inject <link> tags when building from a .ts entry point.)
+        assetFileNames: (assetInfo) => {
+          if (assetInfo.name?.endsWith('.css')) return 'main.css';
+          return 'assets/[name]-[hash][extname]';
+        },
         preserveModulesRoot: 'src',
         manualChunks: undefined // Disable code-splitting
       },
-      preserveEntrySignatures: true,
-      treeshake: false
+      preserveEntrySignatures: 'strict',
+      treeshake: false,
+      checks: {
+        pluginTimings: false
+      }
     }
   },
   // Add this to handle WASM files properly

@@ -1,0 +1,200 @@
+<template>
+  <div class="sidebar">
+    <SidebarBasicInfo :store="sidebarInfoStore" />
+    <SidebarInfoItems />
+
+    <div v-if="tabStore.activeTab === TabId.AcbCalc" class="options-section">
+      <h3>Options</h3>
+
+      <div class="option-group">
+        <div class="checkbox-container">
+          <input
+            type="checkbox"
+            id="printFullValuesCheckbox"
+            :checked="appInputStore.printFullValues"
+            @change="onPrintFullChange"
+          >
+          <label for="printFullValuesCheckbox">Render high-precision dollars</label>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <button
+          class="clear-cache-btn"
+          title="Clear the browser-cached FX exchange rates. Rates will be re-downloaded on the next run."
+          :disabled="!ratesCacheExists"
+          @click="onClearRatesCache"
+        >Clear FX Rates Cache</button>
+      </div>
+    </div>
+
+    <div v-if="tabStore.activeTab === TabId.BrokerConvert" class="options-section">
+      <h3>Options</h3>
+
+      <div class="option-group">
+        <div class="checkbox-container">
+          <input
+            type="checkbox"
+            id="pairStcCheckbox"
+            :checked="!appInputStore.noSellToCoverPair"
+            @change="onPairStcChange"
+          >
+          <label
+            for="pairStcCheckbox"
+            title="Match sell-to-cover entries from benefit confirmations with trade confirmations (paired sales will not generate USD.FX buy transactions). Only affects E*TRADE benefit extraction."
+          >Pair Benefit Sell-to-Covers</label>
+        </div>
+      </div>
+
+      <div v-if="isDebugMode" class="option-group">
+        <div class="checkbox-container">
+          <input
+            type="checkbox"
+            id="extractOnlyCheckbox"
+            :checked="appInputStore.extractOnly"
+            @change="onExtractOnlyChange"
+          >
+          <label
+            for="extractOnlyCheckbox"
+            title="Only extract raw data from PDFs without matching benefits to trade confirmations. Only affects E*TRADE benefit extraction."
+          >Raw PDF extract only</label>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <div class="checkbox-container">
+          <input
+            type="checkbox"
+            id="noFxCheckbox"
+            :checked="appInputStore.noFx"
+            @change="onNoFxChange"
+          >
+          <label
+            for="noFxCheckbox"
+            title="Do not generate implicit foreign exchange (eg. USD.FX) transactions from the output."
+          >No FX transactions</label>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label
+          class="option-label"
+          for="filterYearInput"
+          title="Only include entries whose settlement date falls in this year. Leave blank to include all years."
+        >Filter year</label>
+        <input
+          type="number"
+          id="filterYearInput"
+          class="option-input"
+          placeholder="All years"
+          :value="appInputStore.filterYear"
+          @input="onFilterYearInput"
+          min="2000"
+          max="2099"
+        >
+      </div>
+    </div>
+  </div>
+</template>
+
+<script lang="ts">
+import { defineComponent } from 'vue';
+import SidebarBasicInfo from './SidebarBasicInfo.vue';
+import SidebarInfoItems from './SidebarInfoItems.vue';
+import { getSidebarInfoStore } from './sidebar_info_store.js';
+import { getAppInputStore } from './app_input_store.js';
+import { getTabStore, TabId } from './tab_store.js';
+import { isDebugModeEnabled } from '../debug.js';
+import { clearRatesCache, ratesCacheExists } from '../rates_cache.js';
+
+export default defineComponent({
+   name: 'Sidebar',
+   components: { SidebarBasicInfo, SidebarInfoItems },
+   setup() {
+      const sidebarInfoStore = getSidebarInfoStore();
+      const appInputStore = getAppInputStore();
+      const tabStore = getTabStore();
+      const isDebugMode = isDebugModeEnabled();
+
+      function onPrintFullChange(event: Event) {
+         appInputStore.printFullValues = (event.target as HTMLInputElement).checked;
+      }
+
+      function onPairStcChange(event: Event) {
+         appInputStore.noSellToCoverPair = !(event.target as HTMLInputElement).checked;
+      }
+
+      function onExtractOnlyChange(event: Event) {
+         appInputStore.extractOnly = (event.target as HTMLInputElement).checked;
+      }
+
+      function onNoFxChange(event: Event) {
+         appInputStore.noFx = (event.target as HTMLInputElement).checked;
+      }
+
+      function onFilterYearInput(event: Event) {
+         appInputStore.filterYear = (event.target as HTMLInputElement).value;
+      }
+
+      function onClearRatesCache() {
+         clearRatesCache();
+      }
+
+      return {
+         sidebarInfoStore, appInputStore, tabStore, TabId, isDebugMode,
+         ratesCacheExists,
+         onPrintFullChange, onPairStcChange, onExtractOnlyChange, onNoFxChange,
+         onFilterYearInput, onClearRatesCache,
+      };
+   },
+});
+</script>
+
+<style scoped>
+.sidebar {
+  flex: 0 0 300px;
+  background-color: white;
+  border-radius: var(--border-radius);
+  padding: 20px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.options-section {
+  margin-bottom: 25px;
+}
+
+.option-group {
+  margin-bottom: 15px;
+}
+
+.option-label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: 500;
+}
+
+.option-input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.clear-cache-btn {
+  padding: 6px 12px;
+  font-size: 0.85em;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background-color: #f5f5f5;
+  cursor: pointer;
+}
+
+.clear-cache-btn:hover:not(:disabled) {
+  background-color: #e8e8e8;
+}
+
+.clear-cache-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+</style>

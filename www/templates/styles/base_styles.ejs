@@ -2,11 +2,16 @@
 :root {
   --primary-color: #4a6fa5;
   --primary-color-hover: #3b5998;
+  --primary-color-lighter: #81a3d5;
+  --primary-color-much-lighter: #e1ecfc;
   --secondary-color: #6c757d;
   --secondary-color-hover: #5a6268;
   --success-color: #28a745;
   --light-color: #f8f9fa;
   --dark-color: #343a40;
+  --warning-bg: #fff3cd;
+  --warning-border: #ffeeba;
+  --warning-text: #856404;
   --border-radius: 8px;
 }
 
@@ -87,5 +92,44 @@
    padding-top: 5px;
    padding-bottom: 5px;
 }
+
+.checkbox-container {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.checkbox-container label {
+  margin-left: 10px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 500;
+  color: #374151;
+  font-size: 14px;
+}
+
+.form-group input, .form-group select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+  background: white;
+  transition: border-color 0.2s ease;
+}
+
+.form-group input:focus, .form-group select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
 
 </style>

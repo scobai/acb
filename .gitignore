@@ -30,3 +30,11 @@ venv/
 
 # VSCode
 .vscode/
+
+# Claude
+.claude/settings.local.json
+
+# Transient local planning docs
+local_md/
+local_docs/
+local_scripts/

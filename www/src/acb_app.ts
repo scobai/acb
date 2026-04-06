@@ -1,84 +1,21 @@
-import JSZip from "jszip";
 import { Unit } from "./basic_utils.js";
-import { AppFunctionMode } from "./common/acb_app_types.js";
-import { CsvFilesLoader, FileLoadResult, FileStager, printMetadataForFileList } from "./file_reader.js";
-import { run_acb, run_acb_summary } from './pkg/acb_wasm.js';
+import { AcbAppRunMode, AppFunctionMode } from "./common/acb_app_types.js";
+import { fileBytesToString, loadFilesAsBytes } from "./file_reader.js";
+import { FileEntry, FileKind, getFileManagerStore, modifyDrawerNotificationForUserAddedFiles } from './vue/file_manager_store.js';
+import { run_acb, run_acb_summary, detect_file_kind, detect_file_kind_from_pdf_pages } from './pkg/acb_wasm.js';
 import { Result } from "./result.js";
-import { AppExportResultOk, AppResultOk, AppSummaryResultOk, FileContent, RenderTable } from "./acb_wasm_types.js";
-import { AcbOutput, AggregateOutputContainer, SecurityTablesOutputContainer, TextOutputContainer, YearHighlightSelector } from "./ui_model/acb_app_output.js";
-import { AcbExtraOptions, SummaryDatePicker, ExportButton, FunctionModeSelector, RunButton } from "./ui_model/app_input.js";
-import { ErrorBox } from "./ui_model/error_displays.js";
-import { ClearFilesButton, FileDropArea, FileSelectorInput, SelectedFileList } from "./ui_model/file_input.js";
-import { AutoRunCheckbox, DebugSettings } from "./ui_model/debug.js";
-import { SummaryOutputContainer } from "./ui_model/summary_output.js";
-import { loadTestFile } from "./debug.js";
-import { InfoDialog, InfoListItem } from "./ui_model/info_dialogs.js";
-import { CollapsibleRegion } from "./ui_model/components.js";
-import { asError } from "./http_utils.js";
+import { AppExportResultOk, AppResultOk, AppSummaryResultOk, RatesCacheUpdate, RenderTable } from "./acb_wasm_types.js";
+import { loadRatesCache, mergeRatesCacheUpdate } from "./rates_cache.js";
+import { getOutputStore, setAppFunctionViewMode } from "./vue/output_store.js";
+import { getAppInputStore, getSummaryDate } from "./vue/app_input_store.js";
+import { ErrorBox } from "./vue/error_box_store.js";
+import { downloadCsv, makeZipAndDownload } from "./download_utils.js";
+import { extractPdfPages } from "./pdf_text_util.js";
 
-function makeZip(files: FileContent[]): Promise<Blob> {
-   return new Promise((resolve, reject) => {
-      try {
-         // Create a zip file from the file contents
-         const zip = new JSZip();
-         for (const file of files) {
-            zip.file(file.fileName, file.content);
-         }
-         zip.generateAsync({ type: "blob" })
-            .then(resolve)
-            .catch(reject);
-      } catch (error) {
-         reject(asError(error));
-      }
-   });
-}
-
-function makeFilenameDateString(): string {
-   let date_str = new Date().toISOString();
-   // Replace colons and dots for filename safety
-   date_str = date_str.replace(/[:.]/g, "-");
-   return date_str;
-}
-
-function downloadBlob(filename: string, blob: Blob) {
-   // Create a temporary link to trigger the download
-   const url = URL.createObjectURL(blob);
-   const a = document.createElement("a");
-   a.href = url;
-   a.style.display = "none";
-   a.download = filename;
-   document.body.appendChild(a);
-   a.click();
-   // Clean up the URL object
-   document.body.removeChild(a);
-   URL.revokeObjectURL(url);
-}
-
-function makeZipAndDownload(files: FileContent[]): void {
-   makeZip(files).then((zipBlob) => {
-      let date_str = makeFilenameDateString();
-      const filename = `acb_export_${date_str}.zip`;
-      downloadBlob(filename, zipBlob);
-   }).catch((err: unknown) => {
-      console.error("Error creating zip file: ", err);
-      ErrorBox.getMain().showWith({
-         title: "Export Error",
-         descPre: "An error occurred while creating the export zip file:",
-         errorText: String(err),
-      });
-   });
-}
-
-function downloadCsv(filenameBase: string, csvContent: string) {
-   let date_str = makeFilenameDateString();
-   const filename = `${filenameBase}_${date_str}.csv`;
-   const blob = new Blob([csvContent], { type: "text/csv" });
-   downloadBlob(filename, blob);
-}
-
-enum AcbAppRunMode {
-   Normal = "normal",
-   Export = "export",
+function maybeMergeRatesCacheUpdate(update?: RatesCacheUpdate): void {
+   if (update) {
+      mergeRatesCacheUpdate(update);
+   }
 }
 
 class CommonRunOptions {
@@ -88,13 +25,12 @@ class CommonRunOptions {
 }
 
 function getCommonRunOptions(): Result<CommonRunOptions, Unit> {
-   const printFullDollarValues: boolean =
-      AcbExtraOptions.getPrintFullValuesCheckbox().checked;
+   const printFullDollarValues: boolean = getAppInputStore().printFullValues;
    return Result.Ok(new CommonRunOptions(printFullDollarValues));
 }
 
 async function asyncRunAcb(filenames: string[], contents: string[],
-                           mode: AcbAppRunMode = AcbAppRunMode.Normal
+                           mode: AcbAppRunMode = AcbAppRunMode.Run
 ) {
    console.debug("asyncRunAcb", filenames);
    const commonOptions = getCommonRunOptions();
@@ -105,29 +41,30 @@ async function asyncRunAcb(filenames: string[], contents: string[],
    const { printFullDollarValues } = commonOptions.unwrap();
 
    const exportMode: boolean = mode === AcbAppRunMode.Export;
+   const cachedRates = loadRatesCache();
 
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
       const jsRet: any = await run_acb(filenames, contents,
-         printFullDollarValues, exportMode);
+         printFullDollarValues, exportMode, cachedRates);
       console.debug("asyncRunAcb: run_acb returned: ", jsRet);
 
       if (exportMode) {
          const ret = AppExportResultOk.fromJsValue(jsRet);
+         maybeMergeRatesCacheUpdate(ret.ratesCacheUpdate);
          makeZipAndDownload(ret.csvFiles);
          return;
       }
 
       const ret: AppResultOk = AppResultOk.fromJsValue(jsRet);
+      maybeMergeRatesCacheUpdate(ret.ratesCacheUpdate);
 
-      AcbOutput.setAppFunctionViewMode(AppFunctionMode.Calculate);
+      setAppFunctionViewMode(AppFunctionMode.Calculate);
 
-      TextOutputContainer.get().setText(ret.textOutput);
-      SecurityTablesOutputContainer.get().populateTables(ret.modelOutput);
-      AggregateOutputContainer.get().populateTable(ret.modelOutput);
-      YearHighlightSelector.get().updateSelectableYears(
-         SecurityTablesOutputContainer.get().getYearsShownInverseOrdered()
-      );
+      const outputStore = getOutputStore();
+      outputStore.textOutput = ret.textOutput;
+      outputStore.aggregateTable = ret.modelOutput.aggregateGainsTable;
+      outputStore.securityTables = ret.modelOutput.securityTables;
       ErrorBox.getMain().hide();
    } catch (err) {
       let errMsg = typeof err === "string" ? err : (err instanceof Error ? err.message : String(err));
@@ -153,26 +90,28 @@ async function asyncRunAcbSummary(filenames: string[], contents: string[], lates
 
    // Also, pass split_annual_summary_gains as true (or add UI for it if needed).
    const splitAnnualSummaryGains = true;
+   const cachedRates = loadRatesCache();
 
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
       const jsRet: any = await run_acb_summary(
-         latestDate, filenames, contents, splitAnnualSummaryGains, printFullDollarValues
+         latestDate, filenames, contents, splitAnnualSummaryGains, printFullDollarValues,
+         cachedRates
       );
       console.debug("asyncRunAcbSummary: run_acb_summary returned: ", jsRet);
       const ret: AppSummaryResultOk = AppSummaryResultOk.fromJsValue(jsRet);
+      maybeMergeRatesCacheUpdate(ret.ratesCacheUpdate);
 
       if (mode === AcbAppRunMode.Export) {
          downloadCsv("acb_summary", ret.csvText);
          return;
       }
 
-      AcbOutput.setAppFunctionViewMode(AppFunctionMode.TxSummary);
+      setAppFunctionViewMode(AppFunctionMode.TxSummary);
 
-      // Display CSV text output
-      TextOutputContainer.get().setText(ret.csvText);
-      // Display summary table in its own container
-      SummaryOutputContainer.get().populateTable(ret.summaryTable);
+      const outputStore = getOutputStore();
+      outputStore.textOutput = ret.csvText;
+      outputStore.summaryTable = ret.summaryTable;
       if (ret.summaryTable.errors && ret.summaryTable.errors.length > 0) {
          ErrorBox.getMain().showWith({
             title: "Processing Error(s)",
@@ -227,14 +166,17 @@ async function asyncRunAcbShareTally(filenames: string[], contents: string[], la
    const { printFullDollarValues } = commonOptions.unwrap();
 
    const splitAnnualSummaryGains = false;
+   const cachedRates = loadRatesCache();
 
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
       const jsRet: any = await run_acb_summary(
-         latestDate, filenames, contents, splitAnnualSummaryGains, printFullDollarValues
+         latestDate, filenames, contents, splitAnnualSummaryGains, printFullDollarValues,
+         cachedRates
       );
       console.debug("asyncRunAcbShareTally: run_acb_summary returned: ", jsRet);
       const ret: AppSummaryResultOk = AppSummaryResultOk.fromJsValue(jsRet);
+      maybeMergeRatesCacheUpdate(ret.ratesCacheUpdate);
 
       const [shareTallyTable, csvText] = generateShareTallyRenderTable(ret.summaryTable);
 
@@ -243,11 +185,11 @@ async function asyncRunAcbShareTally(filenames: string[], contents: string[], la
          return;
       }
 
-      AcbOutput.setAppFunctionViewMode(AppFunctionMode.TallyShares);
+      setAppFunctionViewMode(AppFunctionMode.TallyShares);
 
-      // Display CSV text output
-      TextOutputContainer.get().setText(csvText);
-      SummaryOutputContainer.get().populateTable(shareTallyTable);
+      const outputStore = getOutputStore();
+      outputStore.textOutput = csvText;
+      outputStore.summaryTable = shareTallyTable;
       if (shareTallyTable.errors && shareTallyTable.errors.length > 0) {
          ErrorBox.getMain().showWith({
             title: "Processing Error(s)",
@@ -269,86 +211,158 @@ async function asyncRunAcbShareTally(filenames: string[], contents: string[], la
    }
 }
 
-function addFilesToUse(fileList: FileList): void {
-   printMetadataForFileList(fileList);
-   for (const file of fileList) {
-      if (file.type == "text/csv") {
-         if (FileStager.globalInstance.isFileSelected(file)) {
-            console.log("File", file.name, "already selected.");
-         } else {
-            const fileId = FileStager.globalInstance.addFileToUse(file);
-            SelectedFileList.get().addFileListEntry(fileId, file.name);
-         }
-      } else {
-         console.log("File " + file.name + " ignored. Not CSV.");
-      }
-   }
+const WASM_FILE_KIND_MAP: Record<string, FileKind> = {
+   'AcbTxCsv': FileKind.AcbTxCsv,
+   'QuestradeExcel': FileKind.QuestradeXlsx,
+   'RbcDiCsv': FileKind.RbcDiCsv,
+   'EtradeTradeConfirmationPdf': FileKind.EtradeTradeConfirmationPdf,
+   'EtradeBenefitPdf': FileKind.EtradeBenefitPdf,
+   'EtradeBenefitsExcel': FileKind.EtradeBenefitsExcel,
+};
+
+interface FileDetectResult {
+   kind: FileKind;
+   warning?: string;
 }
 
-export function initAppUI() {
-   InfoDialog.initAll();
-   InfoListItem.initAll();
+export function detectFileKindFromBytes(data: Uint8Array, fileName: string): FileDetectResult {
+   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+   const wasmResult = detect_file_kind(data, fileName);
+   // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+   const kind: FileKind = WASM_FILE_KIND_MAP[wasmResult.kind as string] ?? FileKind.Other;
+   // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+   const warning: string | undefined = wasmResult.warning as string | undefined;
+   return { kind, warning };
+}
 
-   FileDropArea.get().setup(addFilesToUse);
-   FileSelectorInput.get().setup(addFilesToUse);
-   SelectedFileList.get().setup((fileId: number) => {
-      console.log("onRemoveFile", fileId);
-      FileStager.globalInstance.removeFile(fileId);
-   });
-   ClearFilesButton.get().setup();
-   CollapsibleRegion.initAll();
+function isPdfFileName(name: string): boolean {
+   return name.toLowerCase().endsWith('.pdf');
+}
 
-   FunctionModeSelector.get().setup();
-   SummaryDatePicker.get().setup();
+async function detectAndUpdatePdfEntry(entry: FileEntry): Promise<void> {
+   try {
+      const pages = await extractPdfPages(entry.data.buffer as ArrayBuffer);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      const wasmResult = detect_file_kind_from_pdf_pages(pages);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const kind: FileKind = WASM_FILE_KIND_MAP[wasmResult.kind as string] ?? FileKind.GenericPdf;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const warning: string | undefined = wasmResult.warning as string | undefined;
 
-   function runHandler(acbRunMode: AcbAppRunMode = AcbAppRunMode.Normal) {
-      const funcMode = FunctionModeSelector.get().getSelectedMode();
-      const fileList = FileStager.globalInstance.getFilesToUseList();
-      const loader = new CsvFilesLoader(fileList);
-      loader.loadFiles((result: FileLoadResult) => {
-         if (result.loadErrors.length > 0) {
-            const error = result.loadErrors[0];
-            ErrorBox.getMain().showWith({
-               title: "Read Error",
-               descPre: error.errorDesc,
-               errorText: error.error,
+      entry.kind = kind;
+      entry.pdfPageTexts = pages;
+      entry.useChecked = warning ? false : FileKind.isInput(kind);
+      if (warning) {
+         entry.warning = warning;
+      }
+   } catch (err) {
+      const errMsg = typeof err === 'string' ? err : (err instanceof Error ? err.message : String(err));
+      entry.warning = `PDF extraction failed: ${errMsg}`;
+      entry.useChecked = false;
+   }
+   entry.isDetecting = false;
+   console.debug(`Finished detecting file: ${entry.name}: kind=${entry.kind}, warning=${entry.warning ?? ''}`);
+}
+
+// NOTE (until refactoring is done): This adds files to the new
+// file manager drawer.
+export function loadAndAddFilesToFileManager(fileList: FileList): void {
+   const files = Array.from(fileList);
+   loadFilesAsBytes(files, (results) => {
+      const store = getFileManagerStore();
+      results.forEach((result) => {
+         if (isPdfFileName(result.name)) {
+            // Add as GenericPdf immediately, then detect asynchronously.
+            const entry = store.addFile({
+               name: result.name,
+               kind: FileKind.GenericPdf,
+               isDownloadable: false,
+               useChecked: false,
+               data: result.data,
+               warning: result.error,
+               isDetecting: !result.error,
             });
-            return;
-         }
-         switch (funcMode) {
-            case AppFunctionMode.Calculate:
-               asyncRunAcb(result.loadedFileNames, result.loadedContent, acbRunMode)
-                  .then(() => {}).catch((_: unknown) => {});
-               break;
-            case AppFunctionMode.TxSummary: {
-               const datePicker = SummaryDatePicker.get();
-               const latestDate = datePicker.getValue() || SummaryDatePicker.getDefaultDate(funcMode);
-               asyncRunAcbSummary(result.loadedFileNames, result.loadedContent, latestDate, acbRunMode)
-                  .then(() => {}).catch((_: unknown) => {});
-               break;
+            if (!result.error) {
+               detectAndUpdatePdfEntry(entry)
+                  .catch((err: unknown) => { console.error('PDF detect error:', err); });
             }
-            case AppFunctionMode.TallyShares: {
-               const datePicker = SummaryDatePicker.get();
-               const latestDate = datePicker.getValue() || SummaryDatePicker.getDefaultDate(funcMode);
-               asyncRunAcbShareTally(result.loadedFileNames, result.loadedContent, latestDate, acbRunMode)
-                  .then(() => {}).catch((_: unknown) => {});
-               break;
-            }
+         } else {
+            // Non-PDF: detect synchronously from bytes.
+            const detectResult = detectFileKindFromBytes(result.data, result.name);
+            const warning = result.error ?? detectResult.warning;
+            store.addFile({
+               name: result.name,
+               kind: detectResult.kind,
+               isDownloadable: false,
+               useChecked: warning ? false : FileKind.isInput(detectResult.kind),
+               data: result.data,
+               warning,
+            });
          }
       });
+      modifyDrawerNotificationForUserAddedFiles(store);
+   });
+}
+
+function fileEntiesToNamesAndStringContents(entries: FileEntry[]
+   ): [filenames: string[], contents: string[]] {
+   const filenames: string[] = [];
+   const contents: string[] = [];
+
+   for (const entry of entries) {
+      if (entry.warning) {
+         console.warn(`Skipping file ${entry.name} due to warning: ${entry.warning}`);
+         continue;
+      }
+      if (!entry.useChecked) {
+         console.log(`Skipping file ${entry.name} because useChecked is false.`);
+         continue;
+      }
+      const contentStr = fileBytesToString(entry.data);
+      filenames.push(entry.name);
+      contents.push(contentStr);
+   }
+   return [filenames, contents];
+}
+
+export function runHandler(acbRunMode: AcbAppRunMode = AcbAppRunMode.Run) {
+   const appInputStore = getAppInputStore();
+   const funcMode = appInputStore.functionMode;
+   const fileStore = getFileManagerStore();
+
+   const csvFiles = fileStore.files.filter(
+      f => f.kind === FileKind.AcbTxCsv && f.useChecked && !f.warning
+   );
+   let [filenames, filesContents] = fileEntiesToNamesAndStringContents(csvFiles);
+
+   // TODO temporary.
+   // Run button should ideally be disabled until at least one
+   // valid file is selected, but this is a quick way to prevent errors from
+   // trying to run with no files.
+   if (filenames.length === 0) {
+      ErrorBox.getMain().showWith({
+         title: "No Valid Files",
+         descPre: "Please add and select at least one valid CSV file before running (use the new file manager drawer).",
+      });
+      return;
    }
 
-   RunButton.get().setup(() => { runHandler(AcbAppRunMode.Normal) });
-   ExportButton.get().setup(() => { runHandler(AcbAppRunMode.Export) });
-
-   AcbOutput.setup();
-
-   DebugSettings.init();
-   // Debug auto-run
-   if (AutoRunCheckbox.get().checked()) {
-      loadTestFile((testFile) => {
-         asyncRunAcb([testFile.name], [testFile.contents])
+   switch (funcMode) {
+      case AppFunctionMode.Calculate:
+         asyncRunAcb(filenames, filesContents, acbRunMode)
             .then(() => {}).catch((_: unknown) => {});
-      })
+         break;
+      case AppFunctionMode.TxSummary: {
+         const latestDate = getSummaryDate(appInputStore);
+         asyncRunAcbSummary(filenames, filesContents, latestDate, acbRunMode)
+            .then(() => {}).catch((_: unknown) => {});
+         break;
+      }
+      case AppFunctionMode.TallyShares: {
+         const latestDate = getSummaryDate(appInputStore);
+         asyncRunAcbShareTally(filenames, filesContents, latestDate, acbRunMode)
+            .then(() => {}).catch((_: unknown) => {});
+         break;
+      }
    }
 }
